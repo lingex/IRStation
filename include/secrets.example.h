@@ -1,7 +1,8 @@
 #pragma once
 
-// Copy this file to include/secrets.h and fill in your router credentials.
-// If WIFI_SSID is empty, IRStation starts a fallback AP instead.
+// Optional build-time defaults. Runtime settings are stored in LittleFS:
+// /config.json. If WIFI_SSID is empty and /config.json has no SSID, IRStation
+// starts a fallback AP instead.
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
 
