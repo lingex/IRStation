@@ -51,11 +51,11 @@ constexpr uint8_t PIN_BTN2 = 0;
 constexpr uint8_t PIN_LED = 10;
 
 constexpr bool LCD_BACKLIGHT_ACTIVE_LOW = true;
-constexpr uint32_t BACKLIGHT_IDLE_MS = 60UL * 1000UL;
+constexpr uint32_t BACKLIGHT_IDLE_MS = 15UL * 1000UL;
 constexpr uint32_t DISPLAY_REFRESH_MS = 1000UL;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 40UL;
 constexpr uint32_t BUTTON_LONG_PRESS_MS = 800UL;
-constexpr uint32_t CONFIG_SAVE_DELAY_MS = 10UL * 1000UL;
+constexpr uint32_t CONFIG_SAVE_DELAY_MS = 5UL * 1000UL;
 constexpr uint16_t LCD_NOTICE_MS = 2200;
 constexpr uint16_t LCD_NOTICE_SHORT_MS = 1400;
 constexpr uint8_t DEFAULT_PRESET_OFF_HOUR = 7;
