@@ -9,7 +9,13 @@
 #include <U8g2lib.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <time.h>
+
+#ifndef ESP_ARDUINO_VERSION_MAJOR
+#define ESP_ARDUINO_VERSION_MAJOR 2
+#endif
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -37,6 +43,10 @@
 
 #ifndef DEFAULT_AC_MODEL
 #define DEFAULT_AC_MODEL 1
+#endif
+
+#ifndef ESPNOW_CHANNEL
+#define ESPNOW_CHANNEL 1
 #endif
 
 constexpr uint8_t PIN_IR_OUT = 1;
@@ -74,6 +84,7 @@ constexpr uint8_t TEMP_MIN_C = 18;
 constexpr uint8_t TEMP_MAX_C = 35;
 constexpr uint16_t IR_CAPTURE_BUFFER_SIZE = 1024;
 constexpr uint8_t IR_CAPTURE_TIMEOUT_MS = 50;
+constexpr size_t ESPNOW_MAX_PAYLOAD_SIZE = 250;
 constexpr const char *CONFIG_FILE = "/config.json";
 
 U8G2_ST7567_ERC12864_F_4W_SW_SPI u8g2(
@@ -174,11 +185,17 @@ String lastIrError;
 String lastIrRxProtocol;
 String lastIrRxSummary;
 String lastIrRxError;
+String lastEspNowUid;
+String lastEspNowCmd;
+String lastEspNowSender;
+String lastEspNowError;
 String lcdNoticeText;
 String configError;
 int16_t lastIrRxModel = -1;
 uint32_t lastIrSendMs = 0;
 uint32_t lastIrRxMs = 0;
+uint32_t lastEspNowRxMs = 0;
+uint32_t lastEspNowIgnoredMs = 0;
 uint32_t lastWebActivityMs = 0;
 uint32_t lastDisplayRefreshMs = 0;
 uint32_t lcdNoticeUntilMs = 0;
@@ -193,6 +210,7 @@ bool settingsMode = false;
 bool lastIrRxAcDecoded = false;
 bool displayDirty = true;
 bool presetScheduleActive = false;
+bool espNowReady = false;
 uint8_t settingsIndex = 0;
 uint8_t backlightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint8_t editBacklightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
@@ -207,6 +225,10 @@ SleepPresetKind activePresetKind = SleepPresetKind::None;
 SleepPresetMode activePresetMode = SleepPresetMode::Cool;
 SleepPresetAction activePresetAction = SleepPresetAction::Off;
 uint8_t activePresetTargetTemp = DEFAULT_SLEEP_TARGET_TEMP;
+portMUX_TYPE espNowMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool espNowPayloadPending = false;
+volatile size_t espNowPayloadLen = 0;
+char espNowPayload[ESPNOW_MAX_PAYLOAD_SIZE + 1] = {0};
 
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -253,7 +275,7 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
     </div></div>
     <div class="panel"><div class="label">Swing</div><div class="seg" id="swings"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
   </section>
-  <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="rssi">RSSI --</span></div>
+  <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="channel">CH --</span><span id="rssi">RSSI --</span></div>
   <div class="panel" style="margin-top:12px"><div class="label">AC brand</div><select id="protocolSelect"></select></div>
   <div class="panel" id="lightPanel" style="margin-top:12px"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
   <div class="panel" id="backlightPanel" style="margin-top:12px"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
@@ -302,7 +324,7 @@ function render(s){
  document.getElementById('mode').textContent=labels.mode[state.mode]||state.mode; document.getElementById('fan').textContent=labels.fan[state.fan]||state.fan;
  document.getElementById('swing').textContent=state.swing?'On':'Off'; document.getElementById('power').classList.toggle('off',!state.power);
  document.getElementById('net').textContent=s.device.wifi+' / '+s.device.ip; document.getElementById('ip').textContent='IP '+s.device.ip;
- document.getElementById('rssi').textContent='RSSI '+s.device.rssi; document.getElementById('proto').textContent='Protocol '+s.ir.protocol+'/'+s.ir.model;
+ document.getElementById('rssi').textContent='RSSI '+s.device.rssi; document.getElementById('channel').textContent='CH '+((s.espnow&&s.espnow.channel)||'--'); document.getElementById('proto').textContent='Protocol '+s.ir.protocol+'/'+s.ir.model;
  const protocolSelect=document.getElementById('protocolSelect'); if(protocolSelect.options.length) protocolSelect.value=s.ir.protocol;
  updateBacklightUi(state.backlightBrightness);
  renderCaps(s);
@@ -1042,6 +1064,133 @@ bool sendCurrentAc() {
   return true;
 }
 
+uint8_t currentWiFiChannel() {
+  uint8_t primary = 0;
+  wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;
+  if (esp_wifi_get_channel(&primary, &secondary) == ESP_OK && primary) return primary;
+  return ESPNOW_CHANNEL;
+}
+
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+void onEspNowReceived(const esp_now_recv_info_t *, const uint8_t *data, int len) {
+#else
+void onEspNowReceived(const uint8_t *, const uint8_t *data, int len) {
+#endif
+  if (!data || len <= 0) return;
+  const size_t copyLen = min(static_cast<size_t>(len), ESPNOW_MAX_PAYLOAD_SIZE);
+  portENTER_CRITICAL_ISR(&espNowMux);
+  memcpy(espNowPayload, data, copyLen);
+  espNowPayload[copyLen] = '\0';
+  espNowPayloadLen = copyLen;
+  espNowPayloadPending = true;
+  portEXIT_CRITICAL_ISR(&espNowMux);
+}
+
+bool copyPendingEspNowPayload(char *payload, size_t payloadSize, size_t &payloadLen) {
+  if (!payload || payloadSize == 0) return false;
+  portENTER_CRITICAL(&espNowMux);
+  const bool pending = espNowPayloadPending;
+  if (pending) {
+    const size_t pendingLen = espNowPayloadLen;
+    payloadLen = min(pendingLen, payloadSize - 1);
+    memcpy(payload, espNowPayload, payloadLen);
+    payload[payloadLen] = '\0';
+    espNowPayloadPending = false;
+  }
+  portEXIT_CRITICAL(&espNowMux);
+  return pending;
+}
+
+void executeEspNowPowerCommand(const String &uid, const String &sender) {
+  lastEspNowUid = uid;
+  lastEspNowCmd = "power";
+  lastEspNowSender = sender;
+  lastEspNowRxMs = millis();
+  lastEspNowError = "";
+  noteActivity();
+
+  if (settingsMode) {
+    lastEspNowError = "LCD settings mode active";
+    showLcdNotice("ESPNOW BUSY", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  if (presetScheduleActive) exitPresetModeForPowerOverride();
+  air.power = !air.power;
+  if (!air.power) cancelPresetSchedule(false);
+  normalizeConfig();
+  saveState();
+  if (!sendCurrentAc()) {
+    lastEspNowError = lastIrError.length() ? lastIrError : "IR send failed";
+    return;
+  }
+  showLcdNotice("ESPNOW POWER", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+}
+
+void processEspNowCommand() {
+  char payload[ESPNOW_MAX_PAYLOAD_SIZE + 1] = {0};
+  size_t payloadLen = 0;
+  if (!copyPendingEspNowPayload(payload, sizeof(payload), payloadLen)) return;
+
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, payload, payloadLen);
+  if (error) {
+    lastEspNowError = "Invalid JSON: " + String(error.c_str());
+    lastEspNowRxMs = millis();
+    showLcdNotice("ESPNOW JSON", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  String uid = doc["uid"] | "";
+  uid.trim();
+  String cmd = doc["cmd"] | "";
+  cmd.trim();
+  cmd.toLowerCase();
+  String sender = doc["id"] | "";
+  if (!sender.length()) sender = doc["name"] | "";
+
+  if (!uid.length() || !cmd.length()) {
+    lastEspNowError = "Missing uid or cmd";
+    lastEspNowRxMs = millis();
+    showLcdNotice("ESPNOW BAD", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  if (uid == lastEspNowUid) {
+    lastEspNowIgnoredMs = millis();
+    return;
+  }
+
+  if (cmd != "power") {
+    lastEspNowUid = uid;
+    lastEspNowCmd = cmd;
+    lastEspNowSender = sender;
+    lastEspNowRxMs = millis();
+    lastEspNowError = "Unsupported command: " + cmd;
+    showLcdNotice("ESPNOW CMD?", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  executeEspNowPowerCommand(uid, sender);
+}
+
+void setupEspNow() {
+  espNowReady = false;
+  const esp_err_t initErr = esp_now_init();
+  if (initErr != ESP_OK) {
+    lastEspNowError = "ESP-NOW init failed: " + String(static_cast<int>(initErr));
+    showLcdNotice("ESPNOW FAIL", LcdNoticeKind::Error);
+    return;
+  }
+  if (esp_now_register_recv_cb(onEspNowReceived) != ESP_OK) {
+    lastEspNowError = "ESP-NOW callback failed";
+    showLcdNotice("ESPNOW CB", LcdNoticeKind::Error);
+    return;
+  }
+  espNowReady = true;
+  lastEspNowError = "";
+}
+
 bool runPresetAction(SleepPresetKind kind) {
   SleepPresetMode mode;
   if (!sleepPresetModeFromAir(mode)) {
@@ -1143,7 +1292,7 @@ void appendSleepPresetProfileJson(String &json, const SleepPresetProfile &profil
 String stateJson() {
   const AcCapabilities capabilities = currentCapabilities();
   String json;
-  json.reserve(1800);
+  json.reserve(2200);
   json += "{\"ok\":true";
   json += ",\"state\":{\"power\":";
   json += air.power ? "true" : "false";
@@ -1175,6 +1324,25 @@ String stateJson() {
   json += ",\"settingsMode\":";
   json += settingsMode ? "true" : "false";
   json += "}";
+  json += ",\"espnow\":{\"ready\":";
+  json += espNowReady ? "true" : "false";
+  json += ",\"channel\":";
+  json += currentWiFiChannel();
+  json += ",\"targetChannel\":";
+  json += ESPNOW_CHANNEL;
+  json += ",\"lastUid\":\"";
+  json += jsonEscape(lastEspNowUid);
+  json += "\",\"lastCmd\":\"";
+  json += jsonEscape(lastEspNowCmd);
+  json += "\",\"lastSender\":\"";
+  json += jsonEscape(lastEspNowSender);
+  json += "\",\"lastMs\":";
+  json += lastEspNowRxMs;
+  json += ",\"lastIgnoredMs\":";
+  json += lastEspNowIgnoredMs;
+  json += ",\"error\":\"";
+  json += jsonEscape(lastEspNowError);
+  json += "\"}";
   json += ",\"capabilities\":{\"tempMin\":";
   json += capabilities.tempMin;
   json += ",\"tempMax\":";
@@ -2089,6 +2257,8 @@ void drawDisplay() {
     statusMark = "!";
   } else if (lastIrSendMs && millis() - lastIrSendMs < 3000) {
     statusMark = "*";
+  } else if (lastEspNowRxMs && millis() - lastEspNowRxMs < 5000) {
+    statusMark = "E";
   } else if (lastIrRxAcDecoded && lastIrRxMs && millis() - lastIrRxMs < 5000) {
     statusMark = "R";
   } else if (configSavePending) {
@@ -2276,7 +2446,7 @@ void setupWiFi() {
 
   apMode = true;
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(IRSTATION_AP_SSID, IRSTATION_AP_PASSWORD);
+  WiFi.softAP(IRSTATION_AP_SSID, IRSTATION_AP_PASSWORD, ESPNOW_CHANNEL);
 }
 
 void setupWeb() {
@@ -2333,6 +2503,7 @@ void setup() {
 
   irrecv.enableIRIn();
   setupWiFi();
+  setupEspNow();
   setupWeb();
   drawDisplay();
 }
@@ -2341,6 +2512,7 @@ void loop() {
   server.handleClient();
   button1.tick();
   button2.tick();
+  processEspNowCommand();
   pollIrReceiver();
   refreshBacklight();
   flushConfigSaveIfDue();
