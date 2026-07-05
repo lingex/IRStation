@@ -1,0 +1,4 @@
+[submodule "lib/IRremoteESP8266"]
+	path = lib/IRremoteESP8266
+	url = https://github.com/lingex/IRremoteESP8266.git
+	branch = rmt_on_esp32

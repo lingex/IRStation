@@ -17,7 +17,7 @@ DIY ESP32-C3 air-conditioner IR remote with a 128x64 ST7567 LCD, web control, an
 | Button 2 | GPIO0 | `B2` |
 | Status LED | GPIO10 | `LED` |
 
-The LCD is driven as an ST7567 128x64 display with U8g2 software SPI. Backlight is treated as active-low because the schematic uses a P-channel MOSFET high-side switch.
+The LCD is driven as an ST7567 128x64 display with U8g2 software SPI. Backlight is PWM dimmed on `LCD_BL`, treated as active-low because the schematic uses a P-channel MOSFET high-side switch. Saved brightness is `1`-`100`, defaulting to `30`.
 
 ## LCD And Buttons
 
@@ -25,20 +25,21 @@ Normal mode:
 
 - `B1` short press wakes the LCD backlight and shows a short LCD notice.
 - `B1` long press enters LCD settings mode.
-- `B2` short press toggles A/C power and sends IR immediately, unless the
-  one-key off-time preset is enabled.
+- `B2` short press toggles A/C power and sends IR immediately.
+- `B2` long press cancels an active sleep preset in normal mode.
 
-When the one-key off-time preset is enabled, `B2` starts the preset instead of
-toggling power. If the A/C is off, the firmware turns it on and schedules power
-off at the next configured local clock time. If the A/C is already on, it only
-schedules or refreshes that off time. During an active preset, any B2 or web
-power operation cancels the preset mode and returns B2 to normal power toggle
-behavior.
+Sleep presets are started only from the web UI or API. `Workday` and `Weekend`
+each have separate `cool` and `heat` settings selected from the current A/C
+mode. Starting a preset sets the configured start temperature and sends IR; if
+the A/C is off, it is turned on first. Workday presets turn the A/C off at the
+configured time. Weekend presets change to the configured target temperature at
+the configured time. After the scheduled action runs, the controller returns to
+normal state. Any B2 or web power operation cancels an active preset.
 
 LCD settings mode edits a draft state only. `B1` short press moves to the next
 available setting, `B1` long press commits the draft and schedules a debounced
 save, `B2` short press moves the selected value forward, and `B2` long press
-moves it backward. Unsupported settings for the selected protocol are skipped.
+moves it backward. Unsupported settings for the selected protocol are skipped. LCD backlight brightness is also available in settings mode and is adjusted in 5% steps.
 
 The normal LCD page shows time/date, AP/STA Wi-Fi status, signal bars, A/C
 state, fan bars, swing, and indoor display light state when supported. Short
@@ -54,8 +55,8 @@ with a web file tool after the device is running. After an in-place file edit,
 call `/api/reload-config` or reboot so the firmware refreshes its in-memory
 settings before the next control command writes the file again.
 
-Runtime changes are saved with a 10 second debounce: each operation updates RAM
-immediately, then writes `/config.json` after 10 seconds with no further
+Runtime changes are saved with a 5 second debounce: each operation updates RAM
+immediately, then writes `/config.json` after 5 seconds with no further
 operation.
 
 ```json
@@ -72,13 +73,22 @@ operation.
     "swing": false,
     "displayLight": true
   },
+  "lcd": {
+    "backlightBrightness": 30
+  },
   "ir": {
     "protocol": "KELVINATOR",
     "model": 1
   },
   "preset": {
-    "enabled": false,
-    "offTime": "07:30"
+    "weekday": {
+      "cool": {"startTemp": 25, "time": "07:50", "action": "off"},
+      "heat": {"startTemp": 22, "time": "07:50", "action": "off"}
+    },
+    "weekend": {
+      "cool": {"startTemp": 25, "time": "08:00", "action": "temp", "targetTemp": 27},
+      "heat": {"startTemp": 22, "time": "08:00", "action": "temp", "targetTemp": 24}
+    }
   }
 }
 ```
@@ -104,13 +114,14 @@ so browser or automation commands cannot overwrite an in-progress button edit.
 | Fan | `/api/fan?value=5` |
 | Swing | `/api/swing?value=toggle` |
 | Indoor display light | `/api/light?value=toggle` |
-| One-key off-time preset | `/api/preset?enabled=on&time=07:30` |
-| Start preset now | `/api/preset/run` |
+| Save sleep preset config | `/api/preset?wdCoolTemp=25&wdCoolTime=07:50&weCoolTarget=27` |
+| Start sleep preset | `/api/preset/run?kind=weekday` or `/api/preset/run?kind=weekend` |
 | Cancel active preset | `/api/preset/cancel` |
 | Resend current state | `/api/send` |
 | Last received IR | `/api/ir` |
 | Apply learned A/C state | `/api/ir/apply` |
 | IR protocol config | `/api/config?protocol=KELVINATOR&model=1` |
+| LCD backlight brightness | `/api/config?brightness=30` |
 | Wi-Fi config | `/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD` |
 | Reload JSON config | `/api/reload-config` |
 | API examples | `/api/help` |
@@ -123,19 +134,21 @@ Supported UI values:
 - legacy fan aliases are accepted: `low` -> `2`, `medium` -> `3`, `high` -> `4`
 - `swing`: `on`, `off`, `toggle`
 - `light` / `displayLight`: `on`, `off`, `toggle`
-- `preset.enabled`: `on`, `off`, `toggle`
-- `preset.offTime` / `time`: `HH:MM`, local 24-hour time
+- `brightness` / `backlightBrightness` / `lcdBrightness`: `1`-`100`, saved as LCD backlight percentage
+- `kind`: `weekday`, `weekend`
+- sleep preset config args: `wdCoolTemp`, `wdCoolTime`, `wdHeatTemp`,
+  `wdHeatTime`, `weCoolTemp`, `weCoolTime`, `weCoolTarget`, `weHeatTemp`,
+  `weHeatTime`, `weHeatTarget`
 
 `/api/state` includes a `capabilities` object for the selected protocol. The
 firmware currently has explicit capability profiles for `KELVINATOR` and `GREE`;
 other protocols use a conservative generic profile. Unsupported display-light
 controls are hidden in the web UI and are not sent in IR commands.
 
-The preset schedule is implemented locally by the controller. Starting the preset
-does not rely on brand-specific A/C clock IR support: the controller sends power
-on if needed, schedules the next matching local clock time such as `07:30`, then
-sends power off when that time arrives. The active schedule is runtime state;
-the configured clock time is saved in LittleFS.
+The sleep preset schedule is implemented locally by the controller. It does not
+rely on brand-specific A/C clock IR support. The active schedule is runtime
+state; the four profile settings are saved in LittleFS. The LCD bottom row shows
+short active labels such as `WDC 07:50` or `WEH 08:00`.
 
 The IR receiver listens continuously. `/api/ir` returns the latest decoded
 signal. If it can be converted to a common A/C state, `/api/ir/apply` updates

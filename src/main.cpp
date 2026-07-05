@@ -51,6 +51,12 @@ constexpr uint8_t PIN_BTN2 = 0;
 constexpr uint8_t PIN_LED = 10;
 
 constexpr bool LCD_BACKLIGHT_ACTIVE_LOW = true;
+constexpr uint8_t LCD_BACKLIGHT_PWM_BITS = 8;
+constexpr uint16_t LCD_BACKLIGHT_PWM_HZ = 5000;
+constexpr uint16_t LCD_BACKLIGHT_PWM_MAX = (1U << LCD_BACKLIGHT_PWM_BITS) - 1;
+constexpr uint8_t LCD_BACKLIGHT_MIN_BRIGHTNESS = 1;
+constexpr uint8_t LCD_BACKLIGHT_MAX_BRIGHTNESS = 100;
+constexpr uint8_t DEFAULT_LCD_BACKLIGHT_BRIGHTNESS = 30;
 constexpr uint32_t BACKLIGHT_IDLE_MS = 15UL * 1000UL;
 constexpr uint32_t DISPLAY_REFRESH_MS = 1000UL;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 40UL;
@@ -58,8 +64,12 @@ constexpr uint32_t BUTTON_LONG_PRESS_MS = 800UL;
 constexpr uint32_t CONFIG_SAVE_DELAY_MS = 5UL * 1000UL;
 constexpr uint16_t LCD_NOTICE_MS = 2200;
 constexpr uint16_t LCD_NOTICE_SHORT_MS = 1400;
-constexpr uint8_t DEFAULT_PRESET_OFF_HOUR = 7;
-constexpr uint8_t DEFAULT_PRESET_OFF_MINUTE = 30;
+constexpr uint8_t DEFAULT_WEEKDAY_SLEEP_HOUR = 7;
+constexpr uint8_t DEFAULT_WEEKDAY_SLEEP_MINUTE = 50;
+constexpr uint8_t DEFAULT_WEEKEND_SLEEP_HOUR = 8;
+constexpr uint8_t DEFAULT_WEEKEND_SLEEP_MINUTE = 0;
+constexpr uint8_t DEFAULT_SLEEP_START_TEMP = 25;
+constexpr uint8_t DEFAULT_SLEEP_TARGET_TEMP = 27;
 constexpr uint8_t TEMP_MIN_C = 18;
 constexpr uint8_t TEMP_MAX_C = 35;
 constexpr uint16_t IR_CAPTURE_BUFFER_SIZE = 1024;
@@ -97,6 +107,29 @@ struct AcCapabilities {
   bool supportsLight;
 };
 
+enum class SleepPresetKind : uint8_t {
+  None,
+  Weekday,
+  Weekend,
+};
+
+enum class SleepPresetMode : uint8_t {
+  Cool,
+  Heat,
+};
+
+enum class SleepPresetAction : uint8_t {
+  Off,
+  Temp,
+};
+
+struct SleepPresetProfile {
+  uint8_t startTemp = DEFAULT_SLEEP_START_TEMP;
+  uint8_t actionHour = DEFAULT_WEEKDAY_SLEEP_HOUR;
+  uint8_t actionMinute = DEFAULT_WEEKDAY_SLEEP_MINUTE;
+  uint8_t targetTemp = DEFAULT_SLEEP_TARGET_TEMP;
+};
+
 AirState air;
 AirState editAir;
 AirState lastIrAir;
@@ -109,6 +142,7 @@ enum class SettingItem : uint8_t {
   Fan,
   Swing,
   Light,
+  Backlight,
   Count,
 };
 
@@ -149,6 +183,7 @@ uint32_t lastWebActivityMs = 0;
 uint32_t lastDisplayRefreshMs = 0;
 uint32_t lcdNoticeUntilMs = 0;
 bool backlightOn = false;
+bool backlightPwmReady = false;
 bool apMode = false;
 bool fileSystemReady = false;
 bool configLoaded = false;
@@ -157,14 +192,21 @@ bool configSavePending = false;
 bool settingsMode = false;
 bool lastIrRxAcDecoded = false;
 bool displayDirty = true;
-bool presetEnabled = false;
 bool presetScheduleActive = false;
 uint8_t settingsIndex = 0;
-uint8_t presetOffHour = DEFAULT_PRESET_OFF_HOUR;
-uint8_t presetOffMinute = DEFAULT_PRESET_OFF_MINUTE;
+uint8_t backlightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
+uint8_t editBacklightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint32_t configSaveDueMs = 0;
-time_t presetOffEpoch = 0;
+time_t presetActionEpoch = 0;
 LcdNoticeKind lcdNoticeKind = LcdNoticeKind::Info;
+SleepPresetProfile weekdayCoolPreset = {DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKDAY_SLEEP_HOUR, DEFAULT_WEEKDAY_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+SleepPresetProfile weekdayHeatPreset = {DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKDAY_SLEEP_HOUR, DEFAULT_WEEKDAY_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+SleepPresetProfile weekendCoolPreset = {DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKEND_SLEEP_HOUR, DEFAULT_WEEKEND_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+SleepPresetProfile weekendHeatPreset = {DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKEND_SLEEP_HOUR, DEFAULT_WEEKEND_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+SleepPresetKind activePresetKind = SleepPresetKind::None;
+SleepPresetMode activePresetMode = SleepPresetMode::Cool;
+SleepPresetAction activePresetAction = SleepPresetAction::Off;
+uint8_t activePresetTargetTemp = DEFAULT_SLEEP_TARGET_TEMP;
 
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -188,9 +230,10 @@ button{min-height:44px;border:1px solid var(--line);border-radius:8px;background
 select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-weight:650;padding:0 10px}
 input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;padding:0 10px}
 .step{display:grid;grid-template-columns:54px 1fr 54px;gap:8px;align-items:center}.step button{font-size:26px}.value{text-align:center;font-size:32px;font-weight:800}
-.form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px}.presetForm{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center}.muted{color:var(--muted);font-size:13px;margin-top:8px}
+.form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px}.presetForm{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center}.presetConfig{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}.presetProfile{border-top:1px solid var(--line);padding-top:8px}.presetProfile .inputs{display:grid;grid-template-columns:1fr 1fr;gap:7px}.presetProfile.weekend .inputs{grid-template-columns:1fr 1fr 1fr}.muted{color:var(--muted);font-size:13px;margin-top:8px}
 .foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;color:var(--muted);font-size:13px}.foot span{border:1px solid var(--line);border-radius:999px;padding:5px 9px}
-@media(max-width:520px){main{padding:12px}.grid{grid-template-columns:1fr}.form,.presetForm{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}}
+@media(pointer:coarse){#backlightSlider{display:none}}
+@media(max-width:520px){main{padding:12px}.grid{grid-template-columns:1fr}.form,.presetForm,.presetConfig{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}}
 </style>
 </head>
 <body>
@@ -213,7 +256,13 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
   <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="rssi">RSSI --</span></div>
   <div class="panel" style="margin-top:12px"><div class="label">AC brand</div><select id="protocolSelect"></select></div>
   <div class="panel" id="lightPanel" style="margin-top:12px"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
-  <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">One-key off time</div><div class="seg" id="presetEnabled"><button data-v="off">Off</button><button data-v="on">On</button></div><div class="presetForm" style="margin-top:8px"><input id="presetTime" type="time"><button id="savePreset">Save</button><button id="runPreset">Start</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div></div>
+  <div class="panel" id="backlightPanel" style="margin-top:12px"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
+  <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="presetConfig">
+    <div class="presetProfile"><div class="label">Workday Cool</div><div class="inputs"><input id="wdCoolTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdCoolTime" type="time"></div></div>
+    <div class="presetProfile"><div class="label">Workday Heat</div><div class="inputs"><input id="wdHeatTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdHeatTime" type="time"></div></div>
+    <div class="presetProfile weekend"><div class="label">Weekend Cool</div><div class="inputs"><input id="weCoolTemp" type="number" min="16" max="30" placeholder="Start"><input id="weCoolTime" type="time"><input id="weCoolTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+    <div class="presetProfile weekend"><div class="label">Weekend Heat</div><div class="inputs"><input id="weHeatTemp" type="number" min="16" max="30" placeholder="Start"><input id="weHeatTime" type="time"><input id="weHeatTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+  </div><button id="savePreset" style="margin-top:10px;width:100%">Save sleep settings</button></div>
   <div class="panel" id="irPanel" style="margin-top:12px"><div class="label">IR receiver</div><div class="foot"><span id="irrx">No signal</span></div><button id="applyIr" style="margin-top:8px">Apply learned state</button></div>
   <div class="panel" id="wifiPanel" style="margin-top:12px"><div class="label">Wi-Fi setup</div><div class="form"><input id="ssid" placeholder="SSID"><input id="password" type="password" placeholder="Password"><button id="saveWifi">Save</button></div><div class="muted" id="wifiNote"></div></div>
 </main>
@@ -227,21 +276,50 @@ function renderCaps(s){
  const c=s.capabilities||{fanMax:5,displayLight:true}; document.querySelectorAll('#fans button').forEach(b=>{const v=b.dataset.v; b.style.display=(v=='auto'||Number(v)<=c.fanMax)?'':'none';});
  document.getElementById('lightPanel').style.display=c.displayLight?'block':'none';
 }
+function clampBacklight(v){return Math.max(1,Math.min(100,Number(v)||30));}
+function updateBacklightUi(v){
+ const b=clampBacklight(v); if(state)state.backlightBrightness=b;
+ document.getElementById('backlightValue').textContent=b+'%';
+ const slider=document.getElementById('backlightSlider'); slider.value=b;
+ document.querySelectorAll('#backlightQuick button').forEach(btn=>btn.classList.toggle('active',Number(btn.dataset.v)==b));
+ return b;
+}
+function setValue(id,v){const el=document.getElementById(id); if(el&&document.activeElement!==el)el.value=v==null?'':v;}
+function profileTime(p){return p&&p.time?p.time:'07:50';}
+function fillPresetProfile(prefix,p,withTarget){
+ setValue(prefix+'Temp',p&&p.startTemp); setValue(prefix+'Time',profileTime(p));
+ if(withTarget)setValue(prefix+'Target',p&&p.targetTemp);
+}
+function presetLabel(p){
+ if(!p||!p.active)return 'Tap Workday or Weekend; mode follows current Cool/Heat.';
+ const kind=p.kind=='weekend'?'Weekend':'Workday';
+ const mode=(p.mode||'').toUpperCase();
+ const action=p.action=='temp'?('-> '+p.targetTemp+'C'):'OFF';
+ return kind+' '+mode+' '+(p.time||'--:--')+' '+action;
+}
 function render(s){
- state=s.state; document.getElementById('temp').textContent=state.temp; document.getElementById('temp2').textContent=state.temp+'C';
+ state=s.state; state.backlightBrightness=s.device.backlightBrightness||30; document.getElementById('temp').textContent=state.temp; document.getElementById('temp2').textContent=state.temp+'C';
  document.getElementById('mode').textContent=labels.mode[state.mode]||state.mode; document.getElementById('fan').textContent=labels.fan[state.fan]||state.fan;
  document.getElementById('swing').textContent=state.swing?'On':'Off'; document.getElementById('power').classList.toggle('off',!state.power);
  document.getElementById('net').textContent=s.device.wifi+' / '+s.device.ip; document.getElementById('ip').textContent='IP '+s.device.ip;
  document.getElementById('rssi').textContent='RSSI '+s.device.rssi; document.getElementById('proto').textContent='Protocol '+s.ir.protocol+'/'+s.ir.model;
  const protocolSelect=document.getElementById('protocolSelect'); if(protocolSelect.options.length) protocolSelect.value=s.ir.protocol;
+ updateBacklightUi(state.backlightBrightness);
  renderCaps(s);
  mark('#modes',state.mode); mark('#fans',state.fan); mark('#swings',state.swing?'on':'off'); mark('#lights',state.displayLight?'on':'off');
- const preset=s.preset||{enabled:false,offTime:'07:30',scheduleActive:false}; mark('#presetEnabled',preset.enabled?'on':'off'); const presetTime=document.getElementById('presetTime'); if(document.activeElement!==presetTime)presetTime.value=preset.offTime||'07:30'; document.getElementById('presetNote').textContent=preset.scheduleActive?('Scheduled for '+(preset.offTime||'--:--')):(preset.enabled?'B2 preset ready':'B2 power toggle'); document.getElementById('cancelPreset').disabled=!preset.scheduleActive;
+ const preset=s.preset||{}; const profiles=preset.profiles||{}; const weekday=profiles.weekday||{}; const weekend=profiles.weekend||{};
+ fillPresetProfile('wdCool',weekday.cool,false); fillPresetProfile('wdHeat',weekday.heat,false); fillPresetProfile('weCool',weekend.cool,true); fillPresetProfile('weHeat',weekend.heat,true);
+ document.getElementById('presetNote').textContent=presetLabel(preset); document.getElementById('cancelPreset').disabled=!preset.active;
  const rx=s.ir.rx||{}; document.getElementById('irrx').textContent=rx.lastMs?(rx.protocol+' '+(rx.acDecoded?'AC':'raw')+' '+(rx.summary||'')):'No signal'; document.getElementById('applyIr').disabled=!rx.acDecoded;
  document.getElementById('wifiPanel').style.display=(s.device.wifi=='ap'||s.config.wifiRestartRequired)?'block':'none'; document.getElementById('wifiNote').textContent=s.config.wifiRestartRequired?'Saved. Wait 10s, then reboot to use the new Wi-Fi.':'AP mode setup';
 }
 async function refresh(){try{render(await api('/api/state'))}catch(e){document.getElementById('net').textContent='Offline'}}
 async function control(q){render(await api('/api/control?'+q));}
+function setBacklightBrightness(v){const b=updateBacklightUi(v); api('/api/config?brightness='+b).then(render);}
+function presetConfigQuery(){
+ const ids=['wdCoolTemp','wdCoolTime','wdHeatTemp','wdHeatTime','weCoolTemp','weCoolTime','weCoolTarget','weHeatTemp','weHeatTime','weHeatTarget'];
+ return ids.map(id=>id+'='+encodeURIComponent(document.getElementById(id).value)).join('&');
+}
 document.getElementById('power').onclick=()=>api('/api/power?value=toggle').then(render);
 document.getElementById('up').onclick=()=>api('/api/temp?delta=1').then(render);
 document.getElementById('down').onclick=()=>api('/api/temp?delta=-1').then(render);
@@ -249,11 +327,16 @@ document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>control('mod
 document.querySelectorAll('#fans button').forEach(b=>b.onclick=()=>control('fan='+b.dataset.v));
 document.querySelectorAll('#swings button').forEach(b=>b.onclick=()=>control('swing='+b.dataset.v));
 document.querySelectorAll('#lights button').forEach(b=>b.onclick=()=>control('light='+b.dataset.v));
-document.querySelectorAll('#presetEnabled button').forEach(b=>b.onclick=()=>api('/api/preset?enabled='+b.dataset.v).then(render));
+document.getElementById('backlightDown').onclick=()=>setBacklightBrightness((state&&state.backlightBrightness||30)-5);
+document.getElementById('backlightUp').onclick=()=>setBacklightBrightness((state&&state.backlightBrightness||30)+5);
+document.getElementById('backlightSlider').oninput=e=>updateBacklightUi(e.target.value);
+document.getElementById('backlightSlider').onchange=e=>setBacklightBrightness(e.target.value);
+document.querySelectorAll('#backlightQuick button').forEach(b=>b.onclick=()=>setBacklightBrightness(b.dataset.v));
 document.getElementById('protocolSelect').onchange=e=>api('/api/config?protocol='+encodeURIComponent(e.target.value)).then(render);
 document.getElementById('applyIr').onclick=()=>api('/api/ir/apply').then(render);
-document.getElementById('savePreset').onclick=()=>api('/api/preset?time='+encodeURIComponent(document.getElementById('presetTime').value)).then(render);
-document.getElementById('runPreset').onclick=()=>api('/api/preset/run').then(render);
+document.getElementById('runWeekday').onclick=()=>api('/api/preset/run?kind=weekday').then(render);
+document.getElementById('runWeekend').onclick=()=>api('/api/preset/run?kind=weekend').then(render);
+document.getElementById('savePreset').onclick=()=>api('/api/preset?'+presetConfigQuery()).then(render);
 document.getElementById('cancelPreset').onclick=()=>api('/api/preset/cancel').then(render);
 document.getElementById('saveWifi').onclick=()=>api('/api/config?ssid='+encodeURIComponent(document.getElementById('ssid').value)+'&password='+encodeURIComponent(document.getElementById('password').value)).then(render);
 loadProtocols().then(refresh).catch(refresh); setInterval(refresh,5000);
@@ -453,10 +536,55 @@ bool sameAirState(const AirState &a, const AirState &b) {
          a.displayLight == b.displayLight;
 }
 
+uint8_t normalizedBacklightBrightness(uint8_t value) {
+  return constrain(value, LCD_BACKLIGHT_MIN_BRIGHTNESS, LCD_BACKLIGHT_MAX_BRIGHTNESS);
+}
+
+uint16_t backlightDuty(uint8_t brightness, bool on) {
+  if (!on) return LCD_BACKLIGHT_ACTIVE_LOW ? LCD_BACKLIGHT_PWM_MAX : 0;
+  const uint16_t onDuty = (static_cast<uint32_t>(normalizedBacklightBrightness(brightness)) * LCD_BACKLIGHT_PWM_MAX + 50) / 100;
+  return LCD_BACKLIGHT_ACTIVE_LOW ? LCD_BACKLIGHT_PWM_MAX - onDuty : onDuty;
+}
+
+void writeBacklightOutput(uint8_t brightness, bool on) {
+  const uint16_t duty = backlightDuty(brightness, on);
+  if (backlightPwmReady) {
+    ledcWrite(PIN_LCD_BL, duty);
+  } else {
+    const uint8_t onLevel = LCD_BACKLIGHT_ACTIVE_LOW ? LOW : HIGH;
+    digitalWrite(PIN_LCD_BL, on && brightness ? onLevel : !onLevel);
+  }
+}
+
+void applyBacklightOutput() {
+  writeBacklightOutput(backlightBrightness, backlightOn);
+}
+
 void setBacklight(bool on) {
   backlightOn = on;
-  const uint8_t onLevel = LCD_BACKLIGHT_ACTIVE_LOW ? LOW : HIGH;
-  digitalWrite(PIN_LCD_BL, on ? onLevel : !onLevel);
+  applyBacklightOutput();
+}
+
+void previewBacklightBrightness(uint8_t brightness) {
+  writeBacklightOutput(normalizedBacklightBrightness(brightness), true);
+}
+
+void setBacklightBrightness(uint8_t brightness) {
+  backlightBrightness = normalizedBacklightBrightness(brightness);
+  applyBacklightOutput();
+  displayDirty = true;
+}
+
+bool parseBacklightBrightness(String value, uint8_t &brightness) {
+  value.trim();
+  if (!value.length()) return false;
+  for (uint8_t i = 0; i < value.length(); i++) {
+    if (!isDigit(value[i])) return false;
+  }
+  const int parsed = value.toInt();
+  if (parsed < LCD_BACKLIGHT_MIN_BRIGHTNESS || parsed > LCD_BACKLIGHT_MAX_BRIGHTNESS) return false;
+  brightness = static_cast<uint8_t>(parsed);
+  return true;
 }
 
 void noteActivity() {
@@ -496,20 +624,67 @@ bool parsePresetTime(String value, uint8_t &hour, uint8_t &minute) {
   return true;
 }
 
-String presetOffTimeString() {
+String presetTimeString(const SleepPresetProfile &profile) {
   char buf[6];
-  snprintf(buf, sizeof(buf), "%02u:%02u", presetOffHour, presetOffMinute);
+  snprintf(buf, sizeof(buf), "%02u:%02u", profile.actionHour, profile.actionMinute);
   return String(buf);
 }
 
-time_t nextPresetOffEpoch() {
+bool sleepPresetModeFromAir(SleepPresetMode &mode) {
+  if (air.mode == "cool") {
+    mode = SleepPresetMode::Cool;
+    return true;
+  }
+  if (air.mode == "heat") {
+    mode = SleepPresetMode::Heat;
+    return true;
+  }
+  return false;
+}
+
+SleepPresetProfile &sleepPresetProfile(SleepPresetKind kind, SleepPresetMode mode) {
+  if (kind == SleepPresetKind::Weekend) return mode == SleepPresetMode::Heat ? weekendHeatPreset : weekendCoolPreset;
+  return mode == SleepPresetMode::Heat ? weekdayHeatPreset : weekdayCoolPreset;
+}
+
+SleepPresetAction sleepPresetAction(SleepPresetKind kind) {
+  return kind == SleepPresetKind::Weekend ? SleepPresetAction::Temp : SleepPresetAction::Off;
+}
+
+const char *sleepPresetKindName(SleepPresetKind kind) {
+  if (kind == SleepPresetKind::Weekday) return "weekday";
+  if (kind == SleepPresetKind::Weekend) return "weekend";
+  return "none";
+}
+
+const char *sleepPresetModeName(SleepPresetMode mode) {
+  return mode == SleepPresetMode::Heat ? "heat" : "cool";
+}
+
+const char *sleepPresetActionName(SleepPresetAction action) {
+  return action == SleepPresetAction::Temp ? "temp" : "off";
+}
+
+const char *sleepPresetLcdLabel() {
+  if (activePresetKind == SleepPresetKind::Weekday) return activePresetMode == SleepPresetMode::Heat ? "WD HEAT" : "WD COOL";
+  if (activePresetKind == SleepPresetKind::Weekend) return activePresetMode == SleepPresetMode::Heat ? "WE HEAT" : "WE COOL";
+  return "PRESET";
+}
+
+const char *sleepPresetLcdShortLabel() {
+  if (activePresetKind == SleepPresetKind::Weekday) return activePresetMode == SleepPresetMode::Heat ? "WDH" : "WDC";
+  if (activePresetKind == SleepPresetKind::Weekend) return activePresetMode == SleepPresetMode::Heat ? "WEH" : "WEC";
+  return "PRE";
+}
+
+time_t nextPresetEpoch(const SleepPresetProfile &profile) {
   const time_t now = time(nullptr);
   if (now <= 100000) return 0;
 
   struct tm target;
   localtime_r(&now, &target);
-  target.tm_hour = presetOffHour;
-  target.tm_min = presetOffMinute;
+  target.tm_hour = profile.actionHour;
+  target.tm_min = profile.actionMinute;
   target.tm_sec = 0;
   time_t epoch = mktime(&target);
   if (epoch <= now) epoch += 24L * 60L * 60L;
@@ -517,15 +692,47 @@ time_t nextPresetOffEpoch() {
 }
 
 void presetTimeLabel(char *buf, size_t len) {
-  snprintf(buf, len, "%02u:%02u", presetOffHour, presetOffMinute);
+  if (!presetScheduleActive) {
+    snprintf(buf, len, "--:--");
+    return;
+  }
+  struct tm target;
+  localtime_r(&presetActionEpoch, &target);
+  snprintf(buf, len, "%02u:%02u", target.tm_hour, target.tm_min);
 }
 
 void cancelPresetSchedule(bool showNotice = false) {
   if (!presetScheduleActive) return;
   presetScheduleActive = false;
-  presetOffEpoch = 0;
+  presetActionEpoch = 0;
+  activePresetKind = SleepPresetKind::None;
+  activePresetAction = SleepPresetAction::Off;
+  activePresetTargetTemp = DEFAULT_SLEEP_TARGET_TEMP;
   displayDirty = true;
   if (showNotice) showLcdNotice("PRESET CANCEL", LcdNoticeKind::Info, LCD_NOTICE_SHORT_MS);
+}
+
+bool normalizeSleepPresetProfile(SleepPresetProfile &profile, const AcCapabilities &capabilities) {
+  bool changed = false;
+  const uint8_t startTemp = constrain(profile.startTemp, capabilities.tempMin, capabilities.tempMax);
+  if (startTemp != profile.startTemp) {
+    profile.startTemp = startTemp;
+    changed = true;
+  }
+  const uint8_t targetTemp = constrain(profile.targetTemp, capabilities.tempMin, capabilities.tempMax);
+  if (targetTemp != profile.targetTemp) {
+    profile.targetTemp = targetTemp;
+    changed = true;
+  }
+  if (profile.actionHour > 23) {
+    profile.actionHour = DEFAULT_WEEKDAY_SLEEP_HOUR;
+    changed = true;
+  }
+  if (profile.actionMinute > 59) {
+    profile.actionMinute = DEFAULT_WEEKDAY_SLEEP_MINUTE;
+    changed = true;
+  }
+  return changed;
 }
 
 bool validProtocol(const String &protocolName) {
@@ -568,16 +775,26 @@ bool normalizeConfig() {
     changed = true;
   }
 
-  if (presetOffHour > 23) {
-    presetOffHour = DEFAULT_PRESET_OFF_HOUR;
-    changed = true;
-  }
-  if (presetOffMinute > 59) {
-    presetOffMinute = DEFAULT_PRESET_OFF_MINUTE;
+  changed = normalizeSleepPresetProfile(weekdayCoolPreset, capabilities) || changed;
+  changed = normalizeSleepPresetProfile(weekdayHeatPreset, capabilities) || changed;
+  changed = normalizeSleepPresetProfile(weekendCoolPreset, capabilities) || changed;
+  changed = normalizeSleepPresetProfile(weekendHeatPreset, capabilities) || changed;
+
+  const uint8_t normalizedBrightness = normalizedBacklightBrightness(backlightBrightness);
+  if (normalizedBrightness != backlightBrightness) {
+    backlightBrightness = normalizedBrightness;
     changed = true;
   }
 
   return changed;
+}
+
+void writeSleepPresetProfile(JsonObject parent, const char *key, const SleepPresetProfile &profile, SleepPresetAction action) {
+  JsonObject item = parent[key].to<JsonObject>();
+  item["startTemp"] = profile.startTemp;
+  item["time"] = presetTimeString(profile);
+  item["action"] = sleepPresetActionName(action);
+  if (action == SleepPresetAction::Temp) item["targetTemp"] = profile.targetTemp;
 }
 
 bool saveConfigFile() {
@@ -605,9 +822,16 @@ bool saveConfigFile() {
   ir["protocol"] = acProtocol;
   ir["model"] = acModel;
 
+  JsonObject lcd = doc["lcd"].to<JsonObject>();
+  lcd["backlightBrightness"] = backlightBrightness;
+
   JsonObject preset = doc["preset"].to<JsonObject>();
-  preset["enabled"] = presetEnabled;
-  preset["offTime"] = presetOffTimeString();
+  JsonObject weekday = preset["weekday"].to<JsonObject>();
+  writeSleepPresetProfile(weekday, "cool", weekdayCoolPreset, SleepPresetAction::Off);
+  writeSleepPresetProfile(weekday, "heat", weekdayHeatPreset, SleepPresetAction::Off);
+  JsonObject weekend = preset["weekend"].to<JsonObject>();
+  writeSleepPresetProfile(weekend, "cool", weekendCoolPreset, SleepPresetAction::Temp);
+  writeSleepPresetProfile(weekend, "heat", weekendHeatPreset, SleepPresetAction::Temp);
 
   File file = LittleFS.open(CONFIG_FILE, "w");
   if (!file) {
@@ -643,6 +867,27 @@ void flushConfigSaveIfDue() {
   } else {
     configSaveDueMs = millis() + CONFIG_SAVE_DELAY_MS;
     showLcdNotice("SAVE FAILED", LcdNoticeKind::Error);
+  }
+}
+
+void loadSleepPresetProfile(JsonVariant value, SleepPresetProfile &profile) {
+  if (value.isNull()) return;
+  JsonVariant startTempValue = value["startTemp"];
+  if (startTempValue.isNull()) startTempValue = value["temp"];
+  if (!startTempValue.isNull()) profile.startTemp = startTempValue.as<uint8_t>();
+
+  JsonVariant targetTempValue = value["targetTemp"];
+  if (!targetTempValue.isNull()) profile.targetTemp = targetTempValue.as<uint8_t>();
+
+  JsonVariant timeValue = value["time"];
+  if (timeValue.isNull()) timeValue = value["actionTime"];
+  if (!timeValue.isNull()) {
+    uint8_t hour;
+    uint8_t minute;
+    if (parsePresetTime(timeValue.as<String>(), hour, minute)) {
+      profile.actionHour = hour;
+      profile.actionMinute = minute;
+    }
   }
 }
 
@@ -697,20 +942,36 @@ void loadConfigFile() {
   if (displayLightValue.isNull()) displayLightValue = doc["state"]["light"];
   if (!displayLightValue.isNull()) air.displayLight = displayLightValue.as<bool>();
 
+  JsonVariant backlightBrightnessValue = doc["lcd"]["backlightBrightness"];
+  if (backlightBrightnessValue.isNull()) backlightBrightnessValue = doc["lcd"]["brightness"];
+  if (backlightBrightnessValue.isNull()) backlightBrightnessValue = doc["device"]["backlightBrightness"];
+  if (backlightBrightnessValue.isNull()) backlightBrightnessValue = doc["backlightBrightness"];
+  if (!backlightBrightnessValue.isNull()) {
+    uint8_t parsedBrightness;
+    if (parseBacklightBrightness(backlightBrightnessValue.as<String>(), parsedBrightness)) {
+      setBacklightBrightness(parsedBrightness);
+    }
+  }
+
   JsonVariant protocolValue = doc["ir"]["protocol"];
   if (!protocolValue.isNull()) acProtocol = protocolValue.as<String>();
   JsonVariant modelValue = doc["ir"]["model"];
   if (!modelValue.isNull()) acModel = modelValue.as<int16_t>();
 
-  JsonVariant presetEnabledValue = doc["preset"]["enabled"];
-  if (!presetEnabledValue.isNull()) presetEnabled = presetEnabledValue.as<bool>();
-  JsonVariant presetTimeValue = doc["preset"]["offTime"];
-  if (!presetTimeValue.isNull()) {
+  loadSleepPresetProfile(doc["preset"]["weekday"]["cool"], weekdayCoolPreset);
+  loadSleepPresetProfile(doc["preset"]["weekday"]["heat"], weekdayHeatPreset);
+  loadSleepPresetProfile(doc["preset"]["weekend"]["cool"], weekendCoolPreset);
+  loadSleepPresetProfile(doc["preset"]["weekend"]["heat"], weekendHeatPreset);
+
+  JsonVariant legacyPresetTimeValue = doc["preset"]["offTime"];
+  if (!legacyPresetTimeValue.isNull()) {
     uint8_t hour;
     uint8_t minute;
-    if (parsePresetTime(presetTimeValue.as<String>(), hour, minute)) {
-      presetOffHour = hour;
-      presetOffMinute = minute;
+    if (parsePresetTime(legacyPresetTimeValue.as<String>(), hour, minute)) {
+      weekdayCoolPreset.actionHour = hour;
+      weekdayCoolPreset.actionMinute = minute;
+      weekdayHeatPreset.actionHour = hour;
+      weekdayHeatPreset.actionMinute = minute;
     }
   }
 
@@ -730,9 +991,8 @@ void saveConfig() {
 }
 
 void exitPresetModeForPowerOverride() {
-  if (!presetScheduleActive && !presetEnabled) return;
+  if (!presetScheduleActive) return;
   cancelPresetSchedule(false);
-  presetEnabled = false;
   saveConfig();
   showLcdNotice("PRESET EXIT", LcdNoticeKind::Info);
 }
@@ -782,44 +1042,73 @@ bool sendCurrentAc() {
   return true;
 }
 
-bool runPresetAction() {
-  const time_t offEpoch = nextPresetOffEpoch();
-  if (!offEpoch) {
+bool runPresetAction(SleepPresetKind kind) {
+  SleepPresetMode mode;
+  if (!sleepPresetModeFromAir(mode)) {
+    lastIrError = "Sleep preset requires current mode cool or heat";
+    showLcdNotice("COOL/HEAT ONLY", LcdNoticeKind::Error);
+    return false;
+  }
+
+  SleepPresetProfile &profile = sleepPresetProfile(kind, mode);
+  const time_t actionEpoch = nextPresetEpoch(profile);
+  if (!actionEpoch) {
     showLcdNotice("TIME NOT SET", LcdNoticeKind::Error);
     return false;
   }
 
-  if (!air.power) {
-    air.power = true;
-    normalizeConfig();
-    saveState();
-    if (!sendCurrentAc()) return false;
-  }
+  cancelPresetSchedule(false);
+  air.power = true;
+  air.temp = profile.startTemp;
+  normalizeConfig();
+  saveState();
+  if (!sendCurrentAc()) return false;
 
   presetScheduleActive = true;
-  presetOffEpoch = offEpoch;
-  showLcdNotice("OFF TIME SET", LcdNoticeKind::Success);
+  presetActionEpoch = actionEpoch;
+  activePresetKind = kind;
+  activePresetMode = mode;
+  activePresetAction = sleepPresetAction(kind);
+  activePresetTargetTemp = profile.targetTemp;
+  showLcdNotice(kind == SleepPresetKind::Weekend ? "WEEKEND SET" : "WORKDAY SET", LcdNoticeKind::Success);
   return true;
 }
 
 void processPresetSchedule() {
   if (!presetScheduleActive) return;
   const time_t now = time(nullptr);
-  if (now <= 100000 || now < presetOffEpoch) return;
+  if (now <= 100000 || now < presetActionEpoch) return;
 
+  const SleepPresetAction action = activePresetAction;
+  const uint8_t targetTemp = activePresetTargetTemp;
   presetScheduleActive = false;
-  presetOffEpoch = 0;
+  presetActionEpoch = 0;
+  activePresetKind = SleepPresetKind::None;
   noteActivity();
 
-  if (!air.power) {
-    showLcdNotice("OFF TIME DONE", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+  if (action == SleepPresetAction::Off) {
+    if (!air.power) {
+      showLcdNotice("PRESET DONE", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+      return;
+    }
+
+    air.power = false;
+    if (settingsMode) editAir.power = false;
+    saveState();
+    if (sendCurrentAc()) showLcdNotice("PRESET OFF", LcdNoticeKind::Success);
     return;
   }
 
-  air.power = false;
-  if (settingsMode) editAir.power = false;
+  if (!air.power) {
+    showLcdNotice("PRESET DONE", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  air.temp = targetTemp;
+  if (settingsMode) editAir.temp = targetTemp;
+  normalizeConfig();
   saveState();
-  if (sendCurrentAc()) showLcdNotice("TIME OFF", LcdNoticeKind::Success);
+  if (sendCurrentAc()) showLcdNotice("PRESET TEMP", LcdNoticeKind::Success);
 }
 
 String isoTime() {
@@ -836,10 +1125,25 @@ String ipString() {
   return apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
 }
 
+void appendSleepPresetProfileJson(String &json, const SleepPresetProfile &profile, SleepPresetAction action) {
+  json += "{\"startTemp\":";
+  json += profile.startTemp;
+  json += ",\"time\":\"";
+  json += presetTimeString(profile);
+  json += "\",\"action\":\"";
+  json += sleepPresetActionName(action);
+  json += "\"";
+  if (action == SleepPresetAction::Temp) {
+    json += ",\"targetTemp\":";
+    json += profile.targetTemp;
+  }
+  json += "}";
+}
+
 String stateJson() {
   const AcCapabilities capabilities = currentCapabilities();
   String json;
-  json.reserve(1160);
+  json.reserve(1800);
   json += "{\"ok\":true";
   json += ",\"state\":{\"power\":";
   json += air.power ? "true" : "false";
@@ -866,6 +1170,8 @@ String stateJson() {
   json += millis() / 1000;
   json += ",\"backlight\":";
   json += backlightOn ? "true" : "false";
+  json += ",\"backlightBrightness\":";
+  json += backlightBrightness;
   json += ",\"settingsMode\":";
   json += settingsMode ? "true" : "false";
   json += "}";
@@ -880,14 +1186,35 @@ String stateJson() {
   json += ",\"displayLight\":";
   json += capabilities.supportsLight ? "true" : "false";
   json += "}";
-  json += ",\"preset\":{\"enabled\":";
-  json += presetEnabled ? "true" : "false";
-  json += ",\"offTime\":\"";
-  json += presetOffTimeString();
-  json += "\",\"nextOffEpoch\":";
-  json += presetScheduleActive ? static_cast<long>(presetOffEpoch) : 0;
+  json += ",\"preset\":{\"active\":";
+  json += presetScheduleActive ? "true" : "false";
   json += ",\"scheduleActive\":";
   json += presetScheduleActive ? "true" : "false";
+  json += ",\"kind\":\"";
+  json += sleepPresetKindName(activePresetKind);
+  json += "\",\"mode\":\"";
+  json += sleepPresetModeName(activePresetMode);
+  json += "\",\"action\":\"";
+  json += sleepPresetActionName(activePresetAction);
+  json += "\",\"time\":\"";
+  if (presetScheduleActive) {
+    char presetBuf[6];
+    presetTimeLabel(presetBuf, sizeof(presetBuf));
+    json += presetBuf;
+  }
+  json += "\",\"nextEpoch\":";
+  json += presetScheduleActive ? static_cast<long>(presetActionEpoch) : 0;
+  json += ",\"targetTemp\":";
+  json += activePresetTargetTemp;
+  json += ",\"profiles\":{\"weekday\":{\"cool\":";
+  appendSleepPresetProfileJson(json, weekdayCoolPreset, SleepPresetAction::Off);
+  json += ",\"heat\":";
+  appendSleepPresetProfileJson(json, weekdayHeatPreset, SleepPresetAction::Off);
+  json += "},\"weekend\":{\"cool\":";
+  appendSleepPresetProfileJson(json, weekendCoolPreset, SleepPresetAction::Temp);
+  json += ",\"heat\":";
+  appendSleepPresetProfileJson(json, weekendHeatPreset, SleepPresetAction::Temp);
+  json += "}}";
   json += "}";
   json += ",\"ir\":{\"protocol\":\"";
   json += jsonEscape(acProtocol);
@@ -1304,12 +1631,64 @@ void handleLight() {
   sendApi(stateJson());
 }
 
-bool parsePresetTimeArg(uint8_t &hour, uint8_t &minute) {
-  if (server.hasArg("time") || server.hasArg("offTime")) {
-    const String arg = server.hasArg("time") ? server.arg("time") : server.arg("offTime");
-    return parsePresetTime(arg, hour, minute);
+bool parseSleepPresetKindArg(SleepPresetKind &kind) {
+  String value = server.hasArg("kind") ? server.arg("kind") : (server.hasArg("type") ? server.arg("type") : "weekday");
+  value.toLowerCase();
+  if (value == "weekday" || value == "workday" || value == "wd") {
+    kind = SleepPresetKind::Weekday;
+    return true;
+  }
+  if (value == "weekend" || value == "we") {
+    kind = SleepPresetKind::Weekend;
+    return true;
   }
   return false;
+}
+
+bool parsePresetTempArg(const String &value, uint8_t &temp) {
+  if (!value.length()) return false;
+  for (uint8_t i = 0; i < value.length(); i++) {
+    if (!isDigit(value[i])) return false;
+  }
+  const AcCapabilities capabilities = currentCapabilities();
+  const int parsed = value.toInt();
+  if (parsed < capabilities.tempMin || parsed > capabilities.tempMax) return false;
+  temp = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+bool updatePresetTempArg(const char *argName, uint8_t &target, bool &changed) {
+  if (!server.hasArg(argName)) return true;
+  uint8_t value;
+  if (!parsePresetTempArg(server.arg(argName), value)) return false;
+  target = value;
+  changed = true;
+  return true;
+}
+
+bool updatePresetTimeArg(const char *argName, SleepPresetProfile &profile, bool &changed) {
+  if (!server.hasArg(argName)) return true;
+  uint8_t hour;
+  uint8_t minute;
+  if (!parsePresetTime(server.arg(argName), hour, minute)) return false;
+  profile.actionHour = hour;
+  profile.actionMinute = minute;
+  changed = true;
+  return true;
+}
+
+bool applySleepPresetConfigArgs(bool &changed) {
+  if (!updatePresetTempArg("wdCoolTemp", weekdayCoolPreset.startTemp, changed)) return false;
+  if (!updatePresetTimeArg("wdCoolTime", weekdayCoolPreset, changed)) return false;
+  if (!updatePresetTempArg("wdHeatTemp", weekdayHeatPreset.startTemp, changed)) return false;
+  if (!updatePresetTimeArg("wdHeatTime", weekdayHeatPreset, changed)) return false;
+  if (!updatePresetTempArg("weCoolTemp", weekendCoolPreset.startTemp, changed)) return false;
+  if (!updatePresetTimeArg("weCoolTime", weekendCoolPreset, changed)) return false;
+  if (!updatePresetTempArg("weCoolTarget", weekendCoolPreset.targetTemp, changed)) return false;
+  if (!updatePresetTempArg("weHeatTemp", weekendHeatPreset.startTemp, changed)) return false;
+  if (!updatePresetTimeArg("weHeatTime", weekendHeatPreset, changed)) return false;
+  if (!updatePresetTempArg("weHeatTarget", weekendHeatPreset.targetTemp, changed)) return false;
+  return true;
 }
 
 void handlePreset() {
@@ -1317,45 +1696,24 @@ void handlePreset() {
   if (rejectIfSettingsMode()) return;
 
   bool changed = false;
-  if (server.hasArg("enabled") || server.hasArg("value")) {
-    bool enabled;
-    const String value = server.hasArg("enabled") ? server.arg("enabled") : server.arg("value");
-    if (!parseSwitchArg(value, presetEnabled, enabled)) {
-      sendError(400, "Invalid preset enabled value");
-      return;
-    }
-    presetEnabled = enabled;
-    if (!presetEnabled) cancelPresetSchedule(false);
-    changed = true;
-  }
-
-  if (server.hasArg("time") || server.hasArg("offTime")) {
-    uint8_t hour;
-    uint8_t minute;
-    if (!parsePresetTimeArg(hour, minute)) {
-      sendError(400, "Invalid preset off time");
-      return;
-    }
-    presetOffHour = hour;
-    presetOffMinute = minute;
-    if (presetScheduleActive) {
-      cancelPresetSchedule(false);
-      if (!runPresetAction()) {
-        sendError(500, lastIrError.length() ? lastIrError : "Preset reschedule failed");
-        return;
-      }
-    }
-    changed = true;
+  if (!applySleepPresetConfigArgs(changed)) {
+    sendError(400, "Invalid preset config argument");
+    return;
   }
 
   if (changed) {
     normalizeConfig();
     saveConfig();
-    showLcdNotice(presetEnabled ? "PRESET ON" : "PRESET OFF", LcdNoticeKind::Info);
+    showLcdNotice("PRESET SAVED", LcdNoticeKind::Info);
   }
 
-  if (server.hasArg("run") && !isFalsy(server.arg("run"))) {
-    if (!runPresetAction()) {
+  if (server.hasArg("run") || server.hasArg("kind") || server.hasArg("type")) {
+    SleepPresetKind kind;
+    if (!parseSleepPresetKindArg(kind)) {
+      sendError(400, "Invalid preset kind");
+      return;
+    }
+    if (!runPresetAction(kind)) {
       sendError(500, lastIrError.length() ? lastIrError : "Preset start failed");
       return;
     }
@@ -1367,7 +1725,12 @@ void handlePreset() {
 void handlePresetRun() {
   noteActivity();
   if (rejectIfSettingsMode()) return;
-  if (!runPresetAction()) {
+  SleepPresetKind kind;
+  if (!parseSleepPresetKindArg(kind)) {
+    sendError(400, "Invalid preset kind");
+    return;
+  }
+  if (!runPresetAction(kind)) {
     sendError(500, lastIrError.length() ? lastIrError : "Preset start failed");
     return;
   }
@@ -1387,6 +1750,7 @@ void handleConfig() {
 
   bool wifiChanged = false;
   bool irChanged = false;
+  bool backlightChanged = false;
   if (server.hasArg("protocol")) {
     String protocol = server.arg("protocol");
     protocol.toUpperCase();
@@ -1409,6 +1773,16 @@ void handleConfig() {
     wifiPassword = server.arg("password");
     wifiChanged = true;
   }
+  if (server.hasArg("brightness") || server.hasArg("backlightBrightness") || server.hasArg("lcdBrightness")) {
+    const String arg = server.hasArg("brightness") ? server.arg("brightness") : (server.hasArg("backlightBrightness") ? server.arg("backlightBrightness") : server.arg("lcdBrightness"));
+    uint8_t brightness;
+    if (!parseBacklightBrightness(arg, brightness)) {
+      sendError(400, "Backlight brightness out of range");
+      return;
+    }
+    setBacklightBrightness(brightness);
+    backlightChanged = true;
+  }
   if (wifiChanged) wifiRestartRequired = true;
   normalizeConfig();
   saveConfig();
@@ -1416,6 +1790,8 @@ void handleConfig() {
     showLcdNotice("WIFI SAVE 10s", LcdNoticeKind::Info);
   } else if (irChanged) {
     showLcdNotice("BRAND SAVE 10s", LcdNoticeKind::Info);
+  } else if (backlightChanged) {
+    showLcdNotice("BRIGHT SAVE", LcdNoticeKind::Info, LCD_NOTICE_SHORT_MS);
   }
   sendApi(stateJson());
 }
@@ -1469,7 +1845,7 @@ void handleIrApply() {
 
 void handleHelp() {
   noteActivity();
-  sendApi(F("{\"ok\":true,\"configFile\":\"/config.json\",\"endpoints\":[\"/api/state\",\"/api/protocols\",\"/api/control?power=on&mode=cool&temp=26&fan=auto&swing=off&light=on\",\"/api/power?value=toggle\",\"/api/temp?delta=1\",\"/api/mode?value=heat\",\"/api/fan?value=5\",\"/api/swing?value=toggle\",\"/api/light?value=toggle\",\"/api/preset?enabled=on&time=07:30\",\"/api/preset/run\",\"/api/preset/cancel\",\"/api/send\",\"/api/ir\",\"/api/ir/apply\",\"/api/config?protocol=KELVINATOR&model=1\",\"/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD\",\"/api/reload-config\"]}"));
+  sendApi(F("{\"ok\":true,\"configFile\":\"/config.json\",\"endpoints\":[\"/api/state\",\"/api/protocols\",\"/api/control?power=on&mode=cool&temp=26&fan=auto&swing=off&light=on\",\"/api/power?value=toggle\",\"/api/temp?delta=1\",\"/api/mode?value=heat\",\"/api/fan?value=5\",\"/api/swing?value=toggle\",\"/api/light?value=toggle\",\"/api/preset?wdCoolTemp=25&wdCoolTime=07:50&weCoolTarget=27\",\"/api/preset/run?kind=weekday\",\"/api/preset/run?kind=weekend\",\"/api/preset/cancel\",\"/api/send\",\"/api/ir\",\"/api/ir/apply\",\"/api/config?protocol=KELVINATOR&model=1\",\"/api/config?brightness=30\",\"/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD\",\"/api/reload-config\"]}"));
 }
 
 void handleNotFound() {
@@ -1610,7 +1986,7 @@ void drawSettingsDisplay() {
   u8g2.setDrawColor(0);
   u8g2.drawStr(3, 22, settingItemTitle(item));
   u8g2.setDrawColor(1);
-  if (!sameAirState(editAir, air)) u8g2.drawStr(48, 22, "EDIT");
+  if (!sameAirState(editAir, air) || editBacklightBrightness != backlightBrightness) u8g2.drawStr(48, 22, "EDIT");
   drawSettingProgress(settingPosition, settingCount);
 
   switch (item) {
@@ -1649,6 +2025,13 @@ void drawSettingsDisplay() {
       drawToggleIcon(16, 29, editAir.displayLight);
       u8g2.setFont(u8g2_font_6x12_tf);
       u8g2.drawStr(54, 42, editAir.displayLight ? "ON" : "OFF");
+      break;
+    case SettingItem::Backlight:
+      u8g2.drawFrame(13, 29, 46, 10);
+      u8g2.drawBox(15, 31, map(editBacklightBrightness, LCD_BACKLIGHT_MIN_BRIGHTNESS, LCD_BACKLIGHT_MAX_BRIGHTNESS, 1, 42), 6);
+      u8g2.setFont(u8g2_font_6x12_tf);
+      snprintf(buf, sizeof(buf), "%u%%", editBacklightBrightness);
+      u8g2.drawStr(70, 42, buf);
       break;
     default:
       break;
@@ -1691,13 +2074,15 @@ void drawDisplay() {
   const String fanLabel = fanDisplayLabel(air.fan);
   u8g2.drawStr(30, 61, fanLabel.c_str());
   if (presetScheduleActive) {
-    presetTimeLabel(buf, sizeof(buf));
-    u8g2.drawStr(64, 61, buf);
+    char presetTimeBuf[6];
+    presetTimeLabel(presetTimeBuf, sizeof(presetTimeBuf));
+    snprintf(buf, sizeof(buf), "%s %s", sleepPresetLcdShortLabel(), presetTimeBuf);
+    u8g2.drawStr(58, 61, buf);
   } else {
     u8g2.drawStr(64, 61, air.swing ? "SWING" : "FIX");
   }
   const AcCapabilities capabilities = currentCapabilities();
-  u8g2.drawStr(94, 61, capabilities.supportsLight ? (air.displayLight ? "LCD" : "lcd") : "--");
+  if (!presetScheduleActive) u8g2.drawStr(100, 61, capabilities.supportsLight ? (air.displayLight ? "LCD" : "lcd") : "--");
 
   const char *statusMark = "";
   if (lastIrError.length()) {
@@ -1731,6 +2116,14 @@ void stepDraftTemp(int8_t direction) {
   }
 }
 
+void stepDraftBacklight(int8_t direction) {
+  int value = editBacklightBrightness + (direction > 0 ? 5 : -5);
+  if (value > LCD_BACKLIGHT_MAX_BRIGHTNESS) value = LCD_BACKLIGHT_MIN_BRIGHTNESS;
+  if (value < LCD_BACKLIGHT_MIN_BRIGHTNESS) value = LCD_BACKLIGHT_MAX_BRIGHTNESS;
+  editBacklightBrightness = static_cast<uint8_t>(value);
+  previewBacklightBrightness(editBacklightBrightness);
+}
+
 void stepDraftSetting(int8_t direction) {
   switch (currentSettingItem()) {
     case SettingItem::Mode:
@@ -1748,6 +2141,9 @@ void stepDraftSetting(int8_t direction) {
     case SettingItem::Light:
       editAir.displayLight = !editAir.displayLight;
       break;
+    case SettingItem::Backlight:
+      stepDraftBacklight(direction);
+      break;
     default:
       break;
   }
@@ -1755,6 +2151,7 @@ void stepDraftSetting(int8_t direction) {
 
 void enterSettingsMode() {
   editAir = air;
+  editBacklightBrightness = backlightBrightness;
   settingsIndex = 0;
   settingsMode = true;
   noteActivity();
@@ -1764,6 +2161,7 @@ void enterSettingsMode() {
 
 void commitSettingsMode() {
   air = editAir;
+  setBacklightBrightness(editBacklightBrightness);
   normalizeConfig();
   settingsMode = false;
   saveState();
@@ -1801,8 +2199,6 @@ void handleButton2Click() {
     air.power = !air.power;
     saveState();
     sendCurrentAc();
-  } else if (presetEnabled) {
-    runPresetAction();
   } else {
     air.power = !air.power;
     if (!air.power) cancelPresetSchedule(false);
@@ -1816,6 +2212,9 @@ void handleButton2LongPress() {
   noteActivity();
   if (settingsMode) {
     stepDraftSetting(-1);
+    drawDisplay();
+  } else if (presetScheduleActive) {
+    cancelPresetSchedule(true);
     drawDisplay();
   }
 }
@@ -1906,6 +2305,7 @@ void setupWeb() {
 
 void setup() {
   pinMode(PIN_LCD_BL, OUTPUT);
+  backlightPwmReady = ledcAttach(PIN_LCD_BL, LCD_BACKLIGHT_PWM_HZ, LCD_BACKLIGHT_PWM_BITS);
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_IR_IN, INPUT);
   button1.setDebounceMs(BUTTON_DEBOUNCE_MS);
@@ -1924,6 +2324,7 @@ void setup() {
   delay(100);
 
   loadConfigFile();
+  applyBacklightOutput();
 
   u8g2.begin();
   u8g2.setContrast(20);
