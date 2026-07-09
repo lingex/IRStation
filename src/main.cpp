@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "Checksum.h"
 #include <LittleFS.h>
 #include <IRac.h>
 #include <IRrecv.h>
@@ -85,7 +86,9 @@ constexpr uint8_t TEMP_MAX_C = 35;
 constexpr uint16_t IR_CAPTURE_BUFFER_SIZE = 1024;
 constexpr uint8_t IR_CAPTURE_TIMEOUT_MS = 50;
 constexpr size_t ESPNOW_MAX_PAYLOAD_SIZE = 250;
+constexpr uint8_t ESPNOW_DEBUG_MSG_COUNT = 3;
 constexpr const char *CONFIG_FILE = "/config.json";
+constexpr const char *DEFAULT_DEVICE_ID = "IRStation";
 
 U8G2_ST7567_ERC12864_F_4W_SW_SPI u8g2(
     U8G2_R0,
@@ -179,6 +182,7 @@ constexpr uint8_t PROTOCOL_CAPABILITY_COUNT = sizeof(PROTOCOL_CAPABILITIES) / si
 
 String acProtocol = DEFAULT_AC_PROTOCOL;
 int16_t acModel = DEFAULT_AC_MODEL;
+String deviceId = DEFAULT_DEVICE_ID;
 String wifiSsid = WIFI_SSID;
 String wifiPassword = WIFI_PASSWORD;
 String lastIrError;
@@ -189,6 +193,7 @@ String lastEspNowUid;
 String lastEspNowCmd;
 String lastEspNowSender;
 String lastEspNowError;
+String espNowDebugMessages[ESPNOW_DEBUG_MSG_COUNT];
 String lcdNoticeText;
 String configError;
 int16_t lastIrRxModel = -1;
@@ -214,6 +219,8 @@ bool espNowReady = false;
 uint8_t settingsIndex = 0;
 uint8_t backlightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint8_t editBacklightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
+uint8_t espNowDebugNextIndex = 0;
+uint8_t espNowDebugCount = 0;
 uint32_t configSaveDueMs = 0;
 time_t presetActionEpoch = 0;
 LcdNoticeKind lcdNoticeKind = LcdNoticeKind::Info;
@@ -253,6 +260,7 @@ select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px
 input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;padding:0 10px}
 .step{display:grid;grid-template-columns:54px 1fr 54px;gap:8px;align-items:center}.step button{font-size:26px}.value{text-align:center;font-size:32px;font-weight:800}
 .form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px}.presetForm{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center}.presetConfig{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}.presetProfile{border-top:1px solid var(--line);padding-top:8px}.presetProfile .inputs{display:grid;grid-template-columns:1fr 1fr;gap:7px}.presetProfile.weekend .inputs{grid-template-columns:1fr 1fr 1fr}.muted{color:var(--muted);font-size:13px;margin-top:8px}
+.debugMsgs{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--muted);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
 .foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;color:var(--muted);font-size:13px}.foot span{border:1px solid var(--line);border-radius:999px;padding:5px 9px}
 @media(pointer:coarse){#backlightSlider{display:none}}
 @media(max-width:520px){main{padding:12px}.grid{grid-template-columns:1fr}.form,.presetForm,.presetConfig{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}}
@@ -287,6 +295,7 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
   </div><button id="savePreset" style="margin-top:10px;width:100%">Save sleep settings</button></div>
   <div class="panel" id="irPanel" style="margin-top:12px"><div class="label">IR receiver</div><div class="foot"><span id="irrx">No signal</span></div><button id="applyIr" style="margin-top:8px">Apply learned state</button></div>
   <div class="panel" id="wifiPanel" style="margin-top:12px"><div class="label">Wi-Fi setup</div><div class="form"><input id="ssid" placeholder="SSID"><input id="password" type="password" placeholder="Password"><button id="saveWifi">Save</button></div><div class="muted" id="wifiNote"></div></div>
+  <div class="panel" id="debugPanel" style="margin-top:12px"><div class="label">Debug Msg</div><pre class="debugMsgs" id="debugMsg">No ESP-NOW messages</pre></div>
 </main>
 <script>
 const labels={mode:{auto:'Auto',cool:'Cool',heat:'Heat',dry:'Dry',fan:'Fan'},fan:{auto:'Auto','1':'1','2':'2','3':'3','4':'4','5':'5'},swing:{true:'On',false:'Off'}};
@@ -319,6 +328,10 @@ function presetLabel(p){
  const action=p.action=='temp'?('-> '+p.targetTemp+'C'):'OFF';
  return kind+' '+mode+' '+(p.time||'--:--')+' '+action;
 }
+function renderDebugMsg(s){
+ const msgs=(s.espnow&&s.espnow.debugMsg)||[];
+ document.getElementById('debugMsg').textContent=msgs.length?msgs.join('\n'):'No ESP-NOW messages';
+}
 function render(s){
  state=s.state; state.backlightBrightness=s.device.backlightBrightness||30; document.getElementById('temp').textContent=state.temp; document.getElementById('temp2').textContent=state.temp+'C';
  document.getElementById('mode').textContent=labels.mode[state.mode]||state.mode; document.getElementById('fan').textContent=labels.fan[state.fan]||state.fan;
@@ -334,6 +347,7 @@ function render(s){
  document.getElementById('presetNote').textContent=presetLabel(preset); document.getElementById('cancelPreset').disabled=!preset.active;
  const rx=s.ir.rx||{}; document.getElementById('irrx').textContent=rx.lastMs?(rx.protocol+' '+(rx.acDecoded?'AC':'raw')+' '+(rx.summary||'')):'No signal'; document.getElementById('applyIr').disabled=!rx.acDecoded;
  document.getElementById('wifiPanel').style.display=(s.device.wifi=='ap'||s.config.wifiRestartRequired)?'block':'none'; document.getElementById('wifiNote').textContent=s.config.wifiRestartRequired?'Saved. Wait 10s, then reboot to use the new Wi-Fi.':'AP mode setup';
+ renderDebugMsg(s);
 }
 async function refresh(){try{render(await api('/api/state'))}catch(e){document.getElementById('net').textContent='Offline'}}
 async function control(q){render(await api('/api/control?'+q));}
@@ -767,6 +781,12 @@ bool validProtocol(const String &protocolName) {
 bool normalizeConfig() {
   bool changed = false;
 
+  deviceId.trim();
+  if (!deviceId.length()) {
+    deviceId = DEFAULT_DEVICE_ID;
+    changed = true;
+  }
+
   acProtocol.toUpperCase();
   if (!validProtocol(acProtocol)) {
     acProtocol = DEFAULT_AC_PROTOCOL;
@@ -828,6 +848,8 @@ bool saveConfigFile() {
   normalizeConfig();
 
   JsonDocument doc;
+  doc["id"] = deviceId;
+
   JsonObject wifi = doc["wifi"].to<JsonObject>();
   wifi["ssid"] = wifiSsid;
   wifi["password"] = wifiPassword;
@@ -944,6 +966,9 @@ void loadConfigFile() {
     normalizeConfig();
     return;
   }
+
+  JsonVariant deviceIdValue = doc["id"];
+  if (!deviceIdValue.isNull()) deviceId = deviceIdValue.as<String>();
 
   JsonVariant wifiSsidValue = doc["wifi"]["ssid"];
   if (!wifiSsidValue.isNull()) wifiSsid = wifiSsidValue.as<String>();
@@ -1064,6 +1089,31 @@ bool sendCurrentAc() {
   return true;
 }
 
+String currentIsoTimestamp() {
+  time_t now = time(nullptr);
+  if (now < 100000) return "";
+  struct tm tmNow;
+  localtime_r(&now, &tmNow);
+  char buf[24];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmNow);
+  return String(buf);
+}
+
+void recordEspNowDebugMessage(const char *payload, size_t payloadLen) {
+  String timestamp = currentIsoTimestamp();
+  if (!timestamp.length()) timestamp = "0000-00-00T00:00:00";
+
+  String entry;
+  entry.reserve(timestamp.length() + 1 + payloadLen);
+  entry += timestamp;
+  entry += ' ';
+  for (size_t i = 0; i < payloadLen; i++) entry += payload[i];
+
+  espNowDebugMessages[espNowDebugNextIndex] = entry;
+  espNowDebugNextIndex = (espNowDebugNextIndex + 1) % ESPNOW_DEBUG_MSG_COUNT;
+  if (espNowDebugCount < ESPNOW_DEBUG_MSG_COUNT) espNowDebugCount++;
+}
+
 uint8_t currentWiFiChannel() {
   uint8_t primary = 0;
   wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;
@@ -1101,6 +1151,40 @@ bool copyPendingEspNowPayload(char *payload, size_t payloadSize, size_t &payload
   return pending;
 }
 
+bool validateEspNowChecksum(JsonDocument &doc) {
+  String received = doc["chk"] | "";
+  received.trim();
+  received.toUpperCase();
+  if (!received.length()) {
+    lastEspNowError = "Missing chk";
+    return false;
+  }
+  const String expected = commandChecksum(doc);
+
+#if 0
+  Serial.print("payload: ");
+  serializeJson(doc, Serial);
+  Serial.println();
+  Serial.print("Received chk: ");
+  Serial.println(received);
+  Serial.print("Expected chk: ");
+  Serial.println(expected);
+#endif
+
+  if (received != expected) {
+    lastEspNowError = "Invalid chk";
+    return false;
+  }
+  return true;
+}
+
+using EspNowCommandHandler = void (*)(const String &uid, const String &sender);
+
+struct EspNowCommandRoute {
+  const char *cmd;
+  EspNowCommandHandler handler;
+};
+
 void executeEspNowPowerCommand(const String &uid, const String &sender) {
   lastEspNowUid = uid;
   lastEspNowCmd = "power";
@@ -1127,10 +1211,33 @@ void executeEspNowPowerCommand(const String &uid, const String &sender) {
   showLcdNotice("ESPNOW POWER", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
 }
 
+constexpr EspNowCommandRoute ESPNOW_COMMAND_ROUTES[] = {
+    {"power", executeEspNowPowerCommand},
+};
+constexpr uint8_t ESPNOW_COMMAND_ROUTE_COUNT = sizeof(ESPNOW_COMMAND_ROUTES) / sizeof(ESPNOW_COMMAND_ROUTES[0]);
+
+bool dispatchEspNowCommand(const String &cmd, const String &uid, const String &sender) {
+  for (uint8_t i = 0; i < ESPNOW_COMMAND_ROUTE_COUNT; i++) {
+    if (cmd == ESPNOW_COMMAND_ROUTES[i].cmd) {
+      ESPNOW_COMMAND_ROUTES[i].handler(uid, sender);
+      return true;
+    }
+  }
+
+  lastEspNowUid = uid;
+  lastEspNowCmd = cmd;
+  lastEspNowSender = sender;
+  lastEspNowRxMs = millis();
+  lastEspNowError = "Unsupported command: " + cmd;
+  showLcdNotice("ESPNOW CMD?", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+  return false;
+}
+
 void processEspNowCommand() {
   char payload[ESPNOW_MAX_PAYLOAD_SIZE + 1] = {0};
   size_t payloadLen = 0;
   if (!copyPendingEspNowPayload(payload, sizeof(payload), payloadLen)) return;
+  recordEspNowDebugMessage(payload, payloadLen);
 
   JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, payload, payloadLen);
@@ -1141,13 +1248,25 @@ void processEspNowCommand() {
     return;
   }
 
+  String to = doc["to"] | "";
+  to.trim();
+  if (to != deviceId && to != "all") {
+    lastEspNowIgnoredMs = millis();
+    return;
+  }
+
+  if (!validateEspNowChecksum(doc)) {
+    lastEspNowRxMs = millis();
+    showLcdNotice("ESPNOW CHK", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
   String uid = doc["uid"] | "";
   uid.trim();
   String cmd = doc["cmd"] | "";
   cmd.trim();
   cmd.toLowerCase();
   String sender = doc["id"] | "";
-  if (!sender.length()) sender = doc["name"] | "";
 
   if (!uid.length() || !cmd.length()) {
     lastEspNowError = "Missing uid or cmd";
@@ -1161,17 +1280,7 @@ void processEspNowCommand() {
     return;
   }
 
-  if (cmd != "power") {
-    lastEspNowUid = uid;
-    lastEspNowCmd = cmd;
-    lastEspNowSender = sender;
-    lastEspNowRxMs = millis();
-    lastEspNowError = "Unsupported command: " + cmd;
-    showLcdNotice("ESPNOW CMD?", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
-    return;
-  }
-
-  executeEspNowPowerCommand(uid, sender);
+  dispatchEspNowCommand(cmd, uid, sender);
 }
 
 void setupEspNow() {
@@ -1261,17 +1370,23 @@ void processPresetSchedule() {
 }
 
 String isoTime() {
-  time_t now = time(nullptr);
-  if (now < 100000) return "";
-  struct tm tmNow;
-  localtime_r(&now, &tmNow);
-  char buf[24];
-  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmNow);
-  return String(buf);
+  return currentIsoTimestamp();
 }
 
 String ipString() {
   return apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+}
+
+void appendEspNowDebugMessagesJson(String &json) {
+  json += ",\"debugMsg\":[";
+  for (uint8_t i = 0; i < espNowDebugCount; i++) {
+    const uint8_t index = (espNowDebugNextIndex + ESPNOW_DEBUG_MSG_COUNT - espNowDebugCount + i) % ESPNOW_DEBUG_MSG_COUNT;
+    if (i) json += ",";
+    json += "\"";
+    json += jsonEscape(espNowDebugMessages[index]);
+    json += "\"";
+  }
+  json += "]";
 }
 
 void appendSleepPresetProfileJson(String &json, const SleepPresetProfile &profile, SleepPresetAction action) {
@@ -1307,7 +1422,9 @@ String stateJson() {
   json += ",\"displayLight\":";
   json += air.displayLight ? "true" : "false";
   json += "}";
-  json += ",\"device\":{\"wifi\":\"";
+  json += ",\"device\":{\"id\":\"";
+  json += jsonEscape(deviceId);
+  json += "\",\"wifi\":\"";
   json += apMode ? "ap" : "sta";
   json += "\",\"ip\":\"";
   json += ipString();
@@ -1342,7 +1459,9 @@ String stateJson() {
   json += lastEspNowIgnoredMs;
   json += ",\"error\":\"";
   json += jsonEscape(lastEspNowError);
-  json += "\"}";
+  json += "\"";
+  appendEspNowDebugMessagesJson(json);
+  json += "}";
   json += ",\"capabilities\":{\"tempMin\":";
   json += capabilities.tempMin;
   json += ",\"tempMax\":";

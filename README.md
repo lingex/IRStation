@@ -61,6 +61,7 @@ operation.
 
 ```json
 {
+  "id": "irstation-01",
   "wifi": {
     "ssid": "your-router",
     "password": "your-password"
@@ -96,6 +97,8 @@ operation.
 If no SSID is configured, the device starts an AP named `IRStation` with password `12345678`. `include/secrets.h` is only an optional build-time fallback when `/config.json` is missing.
 When the device is in AP mode, the web UI shows a Wi-Fi setup panel. Saving
 SSID/password updates `/config.json`; reboot the device to join the new network.
+
+`id` is this receiver's ESP-NOW identity. ESP-NOW commands are JSON messages addressed with `to`, for example `{"to":"irstation-01","uid":"unique-id","cmd":"power","chk":"CRC32"}`. Use `"to":"all"` to broadcast to every receiver. `chk` is required and is the uppercase CRC32 of canonical JSON with top-level `chk` omitted. Repeated messages with the same `uid` are ignored after the first handled command.
 
 ## HTTP GET APIs
 
