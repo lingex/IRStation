@@ -121,7 +121,7 @@ so browser or automation commands cannot overwrite an in-progress button edit.
 | Start sleep preset | `/api/preset/run?kind=weekday` or `/api/preset/run?kind=weekend` |
 | Cancel active preset | `/api/preset/cancel` |
 | Resend current state | `/api/send` |
-| Last received IR | `/api/ir` |
+| Confirmed IR and receive event queue | `/api/ir` |
 | Apply learned A/C state | `/api/ir/apply` |
 | IR protocol config | `/api/config?protocol=KELVINATOR&model=1` |
 | LCD backlight brightness | `/api/config?brightness=30` |
@@ -153,9 +153,12 @@ rely on brand-specific A/C clock IR support. The active schedule is runtime
 state; the four profile settings are saved in LittleFS. The LCD bottom row shows
 short active labels such as `WDC 07:50` or `WEH 08:00`.
 
-The IR receiver listens continuously. `/api/ir` returns the latest decoded
-signal. If it can be converted to a common A/C state, `/api/ir/apply` updates
-the saved remote state and learned protocol/model without sending IR.
+The IR receiver listens continuously. It keeps the eight newest captures in a
+bounded, newest-first event queue returned by `/api/ir`. `UNKNOWN` signals and
+capture overflows are marked as noise and remain available for diagnostics, but
+they do not replace the last confirmed A/C state. `/api/ir/apply` always uses
+that last confirmed state to update the saved remote state and learned
+protocol/model without sending IR.
 
 The default IR protocol is `KELVINATOR`, configured in `platformio.ini` and mirrored in `data/config.json`. Change `/config.json` or call `/api/config?protocol=...&model=...` after flashing. The exact protocol must match your air conditioner for IR sending to work.
 

@@ -85,6 +85,8 @@ constexpr uint8_t TEMP_MIN_C = 18;
 constexpr uint8_t TEMP_MAX_C = 35;
 constexpr uint16_t IR_CAPTURE_BUFFER_SIZE = 1024;
 constexpr uint8_t IR_CAPTURE_TIMEOUT_MS = 50;
+constexpr uint8_t IR_RX_EVENT_QUEUE_SIZE = 8;
+constexpr size_t IR_RX_SUMMARY_MAX_LENGTH = 320;
 constexpr size_t ESPNOW_MAX_PAYLOAD_SIZE = 250;
 constexpr uint8_t ESPNOW_DEBUG_MSG_COUNT = 3;
 constexpr const char *CONFIG_FILE = "/config.json";
@@ -110,6 +112,18 @@ struct AirState {
   String fan = "auto";
   bool swing = false;
   bool displayLight = true;
+};
+
+struct IrRxEvent {
+  uint32_t sequence = 0;
+  uint32_t receivedMs = 0;
+  String protocol;
+  String summary;
+  String error;
+  AirState state;
+  int16_t model = -1;
+  bool acDecoded = false;
+  bool noise = false;
 };
 
 struct AcCapabilities {
@@ -146,7 +160,8 @@ struct SleepPresetProfile {
 
 AirState air;
 AirState editAir;
-AirState lastIrAir;
+IrRxEvent irRxEvents[IR_RX_EVENT_QUEUE_SIZE];
+IrRxEvent lastValidIrRx;
 OneButton button1(PIN_BTN1, true, true);
 OneButton button2(PIN_BTN2, true, true);
 
@@ -186,9 +201,6 @@ String deviceId = DEFAULT_DEVICE_ID;
 String wifiSsid = WIFI_SSID;
 String wifiPassword = WIFI_PASSWORD;
 String lastIrError;
-String lastIrRxProtocol;
-String lastIrRxSummary;
-String lastIrRxError;
 String lastEspNowUid;
 String lastEspNowCmd;
 String lastEspNowSender;
@@ -196,9 +208,7 @@ String lastEspNowError;
 String espNowDebugMessages[ESPNOW_DEBUG_MSG_COUNT];
 String lcdNoticeText;
 String configError;
-int16_t lastIrRxModel = -1;
 uint32_t lastIrSendMs = 0;
-uint32_t lastIrRxMs = 0;
 uint32_t lastEspNowRxMs = 0;
 uint32_t lastEspNowIgnoredMs = 0;
 uint32_t lastWebActivityMs = 0;
@@ -212,7 +222,7 @@ bool configLoaded = false;
 bool wifiRestartRequired = false;
 bool configSavePending = false;
 bool settingsMode = false;
-bool lastIrRxAcDecoded = false;
+bool hasLastValidIrRx = false;
 bool displayDirty = true;
 bool presetScheduleActive = false;
 bool espNowReady = false;
@@ -221,6 +231,9 @@ uint8_t backlightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint8_t editBacklightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint8_t espNowDebugNextIndex = 0;
 uint8_t espNowDebugCount = 0;
+uint8_t irRxEventNextIndex = 0;
+uint8_t irRxEventCount = 0;
+uint32_t irRxNextSequence = 1;
 uint32_t configSaveDueMs = 0;
 time_t presetActionEpoch = 0;
 LcdNoticeKind lcdNoticeKind = LcdNoticeKind::Info;
@@ -400,6 +413,16 @@ String jsonEscape(const String &text) {
     }
   }
   return out;
+}
+
+void enqueueIrRxEvent(const IrRxEvent &event) {
+  irRxEvents[irRxEventNextIndex] = event;
+  irRxEventNextIndex = (irRxEventNextIndex + 1) % IR_RX_EVENT_QUEUE_SIZE;
+  if (irRxEventCount < IR_RX_EVENT_QUEUE_SIZE) irRxEventCount++;
+}
+
+uint8_t irRxEventIndexNewestFirst(uint8_t offset) {
+  return (irRxEventNextIndex + IR_RX_EVENT_QUEUE_SIZE - 1 - offset) % IR_RX_EVENT_QUEUE_SIZE;
 }
 
 bool isTruthy(const String &value) {
@@ -1404,6 +1427,49 @@ void appendSleepPresetProfileJson(String &json, const SleepPresetProfile &profil
   json += "}";
 }
 
+void appendAirStateJson(String &json, const AirState &state) {
+  json += "{\"power\":";
+  json += state.power ? "true" : "false";
+  json += ",\"temp\":";
+  json += state.temp;
+  json += ",\"mode\":\"";
+  json += state.mode;
+  json += "\",\"fan\":\"";
+  json += state.fan;
+  json += "\",\"swing\":";
+  json += state.swing ? "true" : "false";
+  json += ",\"displayLight\":";
+  json += state.displayLight ? "true" : "false";
+  json += "}";
+}
+
+void appendIrRxEventJson(String &json, const IrRxEvent &event, bool includeState = false) {
+  json += "{\"sequence\":";
+  json += event.sequence;
+  json += ",\"protocol\":\"";
+  json += jsonEscape(event.protocol);
+  json += "\",\"model\":";
+  json += event.model;
+  json += ",\"lastMs\":";
+  json += event.receivedMs;
+  json += ",\"acDecoded\":";
+  json += event.acDecoded ? "true" : "false";
+  json += ",\"confirmed\":";
+  json += event.acDecoded ? "true" : "false";
+  json += ",\"noise\":";
+  json += event.noise ? "true" : "false";
+  json += ",\"summary\":\"";
+  json += jsonEscape(event.summary);
+  json += "\",\"error\":\"";
+  json += jsonEscape(event.error);
+  json += "\"";
+  if (includeState && event.acDecoded) {
+    json += ",\"state\":";
+    appendAirStateJson(json, event.state);
+  }
+  json += "}";
+}
+
 String stateJson() {
   const AcCapabilities capabilities = currentCapabilities();
   String json;
@@ -1511,19 +1577,10 @@ String stateJson() {
   json += lastIrSendMs;
   json += ",\"lastError\":\"";
   json += jsonEscape(lastIrError);
-  json += "\",\"rx\":{\"protocol\":\"";
-  json += jsonEscape(lastIrRxProtocol);
-  json += "\",\"model\":";
-  json += lastIrRxModel;
-  json += ",\"lastMs\":";
-  json += lastIrRxMs;
-  json += ",\"acDecoded\":";
-  json += lastIrRxAcDecoded ? "true" : "false";
-  json += ",\"summary\":\"";
-  json += jsonEscape(lastIrRxSummary);
-  json += "\",\"error\":\"";
-  json += jsonEscape(lastIrRxError);
-  json += "\"}";
+  json += "\",\"rx\":";
+  appendIrRxEventJson(json, lastValidIrRx);
+  json += ",\"rxQueueCount\":";
+  json += irRxEventCount;
   json += "}";
   json += ",\"config\":{\"file\":\"";
   json += CONFIG_FILE;
@@ -1621,35 +1678,23 @@ AirState airFromStdState(const stdAc::state_t &state, const AcCapabilities &capa
 
 String irRxJson() {
   String json;
-  json.reserve(640);
-  json += "{\"ok\":true,\"rx\":{\"protocol\":\"";
-  json += jsonEscape(lastIrRxProtocol);
-  json += "\",\"model\":";
-  json += lastIrRxModel;
-  json += ",\"lastMs\":";
-  json += lastIrRxMs;
-  json += ",\"acDecoded\":";
-  json += lastIrRxAcDecoded ? "true" : "false";
-  json += ",\"summary\":\"";
-  json += jsonEscape(lastIrRxSummary);
-  json += "\",\"error\":\"";
-  json += jsonEscape(lastIrRxError);
-  json += "\"}";
-  if (lastIrRxAcDecoded) {
-    json += ",\"state\":{\"power\":";
-    json += lastIrAir.power ? "true" : "false";
-    json += ",\"temp\":";
-    json += lastIrAir.temp;
-    json += ",\"mode\":\"";
-    json += lastIrAir.mode;
-    json += "\",\"fan\":\"";
-    json += lastIrAir.fan;
-    json += "\",\"swing\":";
-    json += lastIrAir.swing ? "true" : "false";
-    json += ",\"displayLight\":";
-    json += lastIrAir.displayLight ? "true" : "false";
-    json += "}";
+  json.reserve(4096);
+  json += "{\"ok\":true,\"rx\":";
+  appendIrRxEventJson(json, lastValidIrRx);
+  if (hasLastValidIrRx) {
+    json += ",\"state\":";
+    appendAirStateJson(json, lastValidIrRx.state);
   }
+  json += ",\"queue\":{\"capacity\":";
+  json += IR_RX_EVENT_QUEUE_SIZE;
+  json += ",\"count\":";
+  json += irRxEventCount;
+  json += ",\"events\":[";
+  for (uint8_t i = 0; i < irRxEventCount; i++) {
+    if (i) json += ",";
+    appendIrRxEventJson(json, irRxEvents[irRxEventIndexNewestFirst(i)], true);
+  }
+  json += "]}";
   json += "}";
   return json;
 }
@@ -2112,17 +2157,17 @@ void handleIrStatus() {
 void handleIrApply() {
   noteActivity();
   if (rejectIfSettingsMode()) return;
-  if (!lastIrRxAcDecoded) {
+  if (!hasLastValidIrRx) {
     sendError(400, "No decoded A/C IR state available");
     return;
   }
 
   const bool updateProtocol = !server.hasArg("protocol") || !isFalsy(server.arg("protocol"));
-  if (updateProtocol && lastIrRxProtocol.length() && validProtocol(lastIrRxProtocol)) {
-    acProtocol = lastIrRxProtocol;
-    if (lastIrRxModel >= 0) acModel = lastIrRxModel;
+  if (updateProtocol && lastValidIrRx.protocol.length() && validProtocol(lastValidIrRx.protocol)) {
+    acProtocol = lastValidIrRx.protocol;
+    if (lastValidIrRx.model >= 0) acModel = lastValidIrRx.model;
   }
-  air = lastIrAir;
+  air = lastValidIrRx.state;
   normalizeConfig();
   if (!air.power) cancelPresetSchedule(false);
   saveState();
@@ -2378,7 +2423,7 @@ void drawDisplay() {
     statusMark = "*";
   } else if (lastEspNowRxMs && millis() - lastEspNowRxMs < 5000) {
     statusMark = "E";
-  } else if (lastIrRxAcDecoded && lastIrRxMs && millis() - lastIrRxMs < 5000) {
+  } else if (hasLastValidIrRx && lastValidIrRx.receivedMs && millis() - lastValidIrRx.receivedMs < 5000) {
     statusMark = "R";
   } else if (configSavePending) {
     statusMark = "S";
@@ -2514,30 +2559,40 @@ void pollIrReceiver() {
   const uint32_t now = millis();
   if (lastIrSendMs && now - lastIrSendMs < 700) return;
 
-  lastIrRxMs = now;
-  lastIrRxProtocol = typeToString(irResults.decode_type, irResults.repeat);
-  lastIrRxModel = -1;
-  lastIrRxAcDecoded = false;
-  lastIrRxError = irResults.overflow ? "Capture buffer overflow" : "";
+  IrRxEvent event;
+  event.sequence = irRxNextSequence++;
+  event.receivedMs = now;
+  event.protocol = typeToString(irResults.decode_type, irResults.repeat);
+  event.error = irResults.overflow ? "Capture buffer overflow" : "";
+  event.noise = irResults.overflow || irResults.decode_type == decode_type_t::UNKNOWN;
 
   String summary = IRAcUtils::resultAcToString(&irResults);
   if (!summary.length()) summary = resultToHumanReadableBasic(&irResults);
   summary.replace("\r", " ");
   summary.replace("\n", " ");
-  lastIrRxSummary = summary;
+  if (summary.length() > IR_RX_SUMMARY_MAX_LENGTH) {
+    summary.remove(IR_RX_SUMMARY_MAX_LENGTH);
+    summary += "...";
+  }
+  event.summary = summary;
 
   stdAc::state_t decoded = ac.next;
-  if (IRAcUtils::decodeToState(&irResults, &decoded, &ac.next)) {
+  if (!irResults.overflow && IRAcUtils::decodeToState(&irResults, &decoded, &ac.next)) {
     const String protocolName = typeToString(decoded.protocol);
     const AcCapabilities capabilities = capabilitiesForProtocol(protocolName);
-    lastIrAir = airFromStdState(decoded, capabilities);
-    lastIrRxProtocol = protocolName;
-    lastIrRxModel = decoded.model;
-    lastIrRxAcDecoded = true;
+    event.state = airFromStdState(decoded, capabilities);
+    event.protocol = protocolName;
+    event.model = decoded.model;
+    event.acDecoded = true;
+    event.noise = false;
+    lastValidIrRx = event;
+    hasLastValidIrRx = true;
   }
 
+  enqueueIrRxEvent(event);
+
   if (!settingsMode) {
-    if (lastIrRxAcDecoded) {
+    if (event.acDecoded) {
       noteActivity();
       showLcdNotice("IR AC RX", LcdNoticeKind::Success);
     } else if (irResults.overflow) {
