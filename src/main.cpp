@@ -135,6 +135,13 @@ struct AcCapabilities {
   bool supportsLight;
 };
 
+struct AcModelOption {
+  decode_type_t protocol;
+  int16_t value;
+  const char *name;
+  bool isDefault;
+};
+
 enum class SleepPresetKind : uint8_t {
   None,
   Weekday,
@@ -194,6 +201,48 @@ constexpr AcCapabilities PROTOCOL_CAPABILITIES[] = {
     {"KELVINATOR", 16, 30, 5, true, true},
 };
 constexpr uint8_t PROTOCOL_CAPABILITY_COUNT = sizeof(PROTOCOL_CAPABILITIES) / sizeof(PROTOCOL_CAPABILITIES[0]);
+
+constexpr AcModelOption AC_MODEL_OPTIONS[] = {
+    {decode_type_t::ARGO, 1, "WREM2", true},
+    {decode_type_t::ARGO, 2, "WREM3", false},
+    {decode_type_t::FUJITSU_AC, 1, "ARRAH2E", true},
+    {decode_type_t::FUJITSU_AC, 2, "ARDB1", false},
+    {decode_type_t::FUJITSU_AC, 3, "ARREB1E", false},
+    {decode_type_t::FUJITSU_AC, 4, "ARJW2", false},
+    {decode_type_t::FUJITSU_AC, 5, "ARRY4", false},
+    {decode_type_t::FUJITSU_AC, 6, "ARREW4E", false},
+    {decode_type_t::GREE, 1, "YAW1F", true},
+    {decode_type_t::GREE, 2, "YBOFB", false},
+    {decode_type_t::GREE, 3, "YX1FSF", false},
+    {decode_type_t::HAIER_AC176, 1, "V9014557-A", true},
+    {decode_type_t::HAIER_AC176, 2, "V9014557-B", false},
+    {decode_type_t::HITACHI_AC1, 1, "R-LT0541-HTA-A", true},
+    {decode_type_t::HITACHI_AC1, 2, "R-LT0541-HTA-B", false},
+    {decode_type_t::LG, 1, "GE6711AR2853M", true},
+    {decode_type_t::LG, 5, "LG6711A20083V", false},
+    {decode_type_t::LG2, 2, "AKB75215403", true},
+    {decode_type_t::LG2, 3, "AKB74955603", false},
+    {decode_type_t::LG2, 4, "AKB73757604", false},
+    {decode_type_t::MIRAGE, 1, "KKG9A-C1", true},
+    {decode_type_t::MIRAGE, 2, "KKG29A-C1", false},
+    {decode_type_t::PANASONIC_AC, 1, "LKE", false},
+    {decode_type_t::PANASONIC_AC, 2, "NKE", false},
+    {decode_type_t::PANASONIC_AC, 3, "DKE/PKR", false},
+    {decode_type_t::PANASONIC_AC, 4, "JKE", true},
+    {decode_type_t::PANASONIC_AC, 5, "CKP", false},
+    {decode_type_t::PANASONIC_AC, 6, "RKR", false},
+    {decode_type_t::SHARP_AC, 1, "A907", true},
+    {decode_type_t::SHARP_AC, 2, "A705", false},
+    {decode_type_t::SHARP_AC, 3, "A903/820", false},
+    {decode_type_t::TCL112AC, 1, "TAC09CHSD", true},
+    {decode_type_t::TCL112AC, 2, "GZ055BE1", false},
+    {decode_type_t::TEKNOPOINT, 2, "GZ055BE1", true},
+    {decode_type_t::VOLTAS, 0, "Full Function", false},
+    {decode_type_t::VOLTAS, 1, "122LZF", true},
+    {decode_type_t::WHIRLPOOL_AC, 1, "DG11J13A/DG11J1-04", true},
+    {decode_type_t::WHIRLPOOL_AC, 2, "DG11J191", false},
+};
+constexpr uint8_t AC_MODEL_OPTION_COUNT = sizeof(AC_MODEL_OPTIONS) / sizeof(AC_MODEL_OPTIONS[0]);
 
 String acProtocol = DEFAULT_AC_PROTOCOL;
 int16_t acModel = DEFAULT_AC_MODEL;
@@ -298,6 +347,7 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
   </section>
   <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="channel">CH --</span><span id="rssi">RSSI --</span></div>
   <div class="panel" style="margin-top:12px"><div class="label">AC brand</div><select id="protocolSelect"></select></div>
+  <div class="panel" id="modelPanel" style="display:none;margin-top:12px"><div class="label">Remote profile</div><select id="modelSelect"></select><div class="muted" style="margin-top:8px">Remote model, not the indoor-unit product model.</div></div>
   <div class="panel" id="lightPanel" style="margin-top:12px"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
   <div class="panel" id="backlightPanel" style="margin-top:12px"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
   <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="presetConfig">
@@ -313,9 +363,23 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
 <script>
 const labels={mode:{auto:'Auto',cool:'Cool',heat:'Heat',dry:'Dry',fan:'Fan'},fan:{auto:'Auto','1':'1','2':'2','3':'3','4':'4','5':'5'},swing:{true:'On',false:'Off'}};
 let state=null;
+let protocolModels={};
 async function api(path){const r=await fetch(path,{cache:'no-store'}); if(!r.ok)throw new Error(await r.text()); return r.json();}
 function mark(group,value){document.querySelectorAll(group+' button').forEach(b=>b.classList.toggle('active',b.dataset.v==value));}
-async function loadProtocols(){const s=await api('/api/protocols'); const el=document.getElementById('protocolSelect'); el.innerHTML=''; s.protocols.forEach(p=>{const o=document.createElement('option'); o.value=p; o.textContent=p; el.appendChild(o);});}
+async function loadProtocols(){
+ const s=await api('/api/protocols'); protocolModels=s.models||{};
+ const el=document.getElementById('protocolSelect'); el.innerHTML='';
+ s.protocols.forEach(p=>{const o=document.createElement('option'); o.value=p; o.textContent=p; el.appendChild(o);});
+}
+function renderModelSelect(protocol,model){
+ const options=protocolModels[protocol]||[]; const panel=document.getElementById('modelPanel'); const el=document.getElementById('modelSelect');
+ panel.style.display=options.length>1?'block':'none';
+ if(el.dataset.protocol!==protocol){
+  el.dataset.protocol=protocol; el.innerHTML='';
+  options.forEach(m=>{const o=document.createElement('option'); o.value=String(m.value); o.textContent=m.name+' ('+m.value+')'; el.appendChild(o);});
+ }
+ if(options.length)el.value=String(model);
+}
 function renderCaps(s){
  const c=s.capabilities||{fanMax:5,displayLight:true}; document.querySelectorAll('#fans button').forEach(b=>{const v=b.dataset.v; b.style.display=(v=='auto'||Number(v)<=c.fanMax)?'':'none';});
  document.getElementById('lightPanel').style.display=c.displayLight?'block':'none';
@@ -352,6 +416,7 @@ function render(s){
  document.getElementById('net').textContent=s.device.wifi+' / '+s.device.ip; document.getElementById('ip').textContent='IP '+s.device.ip;
  document.getElementById('rssi').textContent='RSSI '+s.device.rssi; document.getElementById('channel').textContent='CH '+((s.espnow&&s.espnow.channel)||'--'); document.getElementById('proto').textContent='Protocol '+s.ir.protocol+'/'+s.ir.model;
  const protocolSelect=document.getElementById('protocolSelect'); if(protocolSelect.options.length) protocolSelect.value=s.ir.protocol;
+ renderModelSelect(s.ir.protocol,s.ir.model);
  updateBacklightUi(state.backlightBrightness);
  renderCaps(s);
  mark('#modes',state.mode); mark('#fans',state.fan); mark('#swings',state.swing?'on':'off'); mark('#lights',state.displayLight?'on':'off');
@@ -382,6 +447,7 @@ document.getElementById('backlightSlider').oninput=e=>updateBacklightUi(e.target
 document.getElementById('backlightSlider').onchange=e=>setBacklightBrightness(e.target.value);
 document.querySelectorAll('#backlightQuick button').forEach(b=>b.onclick=()=>setBacklightBrightness(b.dataset.v));
 document.getElementById('protocolSelect').onchange=e=>api('/api/config?protocol='+encodeURIComponent(e.target.value)).then(render);
+document.getElementById('modelSelect').onchange=e=>api('/api/config?model='+encodeURIComponent(e.target.value)).then(render);
 document.getElementById('applyIr').onclick=()=>api('/api/ir/apply').then(render);
 document.getElementById('runWeekday').onclick=()=>api('/api/preset/run?kind=weekday').then(render);
 document.getElementById('runWeekend').onclick=()=>api('/api/preset/run?kind=weekend').then(render);
@@ -801,6 +867,48 @@ bool validProtocol(const String &protocolName) {
   return protocol != decode_type_t::UNKNOWN && IRac::isProtocolSupported(protocol);
 }
 
+uint8_t modelOptionCount(decode_type_t protocol) {
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < AC_MODEL_OPTION_COUNT; i++) {
+    if (AC_MODEL_OPTIONS[i].protocol == protocol) count++;
+  }
+  return count;
+}
+
+int16_t defaultModelForProtocol(decode_type_t protocol) {
+  const AcModelOption *first = nullptr;
+  for (uint8_t i = 0; i < AC_MODEL_OPTION_COUNT; i++) {
+    const AcModelOption &option = AC_MODEL_OPTIONS[i];
+    if (option.protocol != protocol) continue;
+    if (!first) first = &option;
+    if (option.isDefault) return option.value;
+  }
+  return first ? first->value : DEFAULT_AC_MODEL;
+}
+
+bool validModelForProtocol(decode_type_t protocol, int16_t model) {
+  bool hasOptions = false;
+  for (uint8_t i = 0; i < AC_MODEL_OPTION_COUNT; i++) {
+    const AcModelOption &option = AC_MODEL_OPTIONS[i];
+    if (option.protocol != protocol) continue;
+    hasOptions = true;
+    if (option.value == model) return true;
+  }
+  return !hasOptions && model == DEFAULT_AC_MODEL;
+}
+
+bool parseModelValue(const String &text, int16_t &model) {
+  if (!text.length()) return false;
+  uint32_t value = 0;
+  for (size_t i = 0; i < text.length(); i++) {
+    if (!isDigit(text[i])) return false;
+    value = value * 10 + static_cast<uint8_t>(text[i] - '0');
+    if (value > INT16_MAX) return false;
+  }
+  model = static_cast<int16_t>(value);
+  return true;
+}
+
 bool normalizeConfig() {
   bool changed = false;
 
@@ -835,8 +943,9 @@ bool normalizeConfig() {
     changed = true;
   }
 
-  if (acModel < 0) {
-    acModel = DEFAULT_AC_MODEL;
+  const decode_type_t configuredProtocol = strToDecodeType(acProtocol.c_str());
+  if (!validModelForProtocol(configuredProtocol, acModel)) {
+    acModel = defaultModelForProtocol(configuredProtocol);
     changed = true;
   }
 
@@ -1722,17 +1831,45 @@ String protocolsJson() {
   }
 
   String json;
-  json.reserve(1024);
+  json.reserve(4096);
   json += "{\"ok\":true,\"current\":\"";
   json += jsonEscape(acProtocol);
-  json += "\",\"protocols\":[";
+  json += "\",\"currentModel\":";
+  json += acModel;
+  json += ",\"protocols\":[";
   for (uint8_t i = 0; i < count; i++) {
     if (i) json += ",";
     json += "\"";
     json += jsonEscape(protocols[i]);
     json += "\"";
   }
-  json += "]}";
+  json += "],\"models\":{";
+  bool firstProtocol = true;
+  for (uint8_t i = 0; i < count; i++) {
+    const decode_type_t protocol = strToDecodeType(protocols[i].c_str());
+    if (!modelOptionCount(protocol)) continue;
+    if (!firstProtocol) json += ",";
+    firstProtocol = false;
+    json += "\"";
+    json += jsonEscape(protocols[i]);
+    json += "\":[";
+    bool firstModel = true;
+    for (uint8_t j = 0; j < AC_MODEL_OPTION_COUNT; j++) {
+      const AcModelOption &option = AC_MODEL_OPTIONS[j];
+      if (option.protocol != protocol) continue;
+      if (!firstModel) json += ",";
+      firstModel = false;
+      json += "{\"value\":";
+      json += option.value;
+      json += ",\"name\":\"";
+      json += jsonEscape(option.name);
+      json += "\",\"default\":";
+      json += option.isDefault ? "true" : "false";
+      json += "}";
+    }
+    json += "]";
+  }
+  json += "}}";
   return json;
 }
 
@@ -2083,18 +2220,33 @@ void handleConfig() {
   bool wifiChanged = false;
   bool irChanged = false;
   bool backlightChanged = false;
+  String nextProtocol = acProtocol;
+  int16_t nextModel = acModel;
   if (server.hasArg("protocol")) {
-    String protocol = server.arg("protocol");
-    protocol.toUpperCase();
-    if (!validProtocol(protocol)) {
+    nextProtocol = server.arg("protocol");
+    nextProtocol.toUpperCase();
+    if (!validProtocol(nextProtocol)) {
       sendError(400, "Unsupported IR protocol");
       return;
     }
-    acProtocol = protocol;
-    irChanged = true;
+    if (!server.hasArg("model")) {
+      nextModel = defaultModelForProtocol(strToDecodeType(nextProtocol.c_str()));
+    }
   }
   if (server.hasArg("model")) {
-    acModel = server.arg("model").toInt();
+    if (!parseModelValue(server.arg("model"), nextModel)) {
+      sendError(400, "Invalid IR model");
+      return;
+    }
+  }
+  if (server.hasArg("protocol") || server.hasArg("model")) {
+    const decode_type_t protocol = strToDecodeType(nextProtocol.c_str());
+    if (!validModelForProtocol(protocol, nextModel)) {
+      sendError(400, "IR model is not valid for selected protocol");
+      return;
+    }
+    acProtocol = nextProtocol;
+    acModel = nextModel;
     irChanged = true;
   }
   if (server.hasArg("ssid")) {
@@ -2165,7 +2317,10 @@ void handleIrApply() {
   const bool updateProtocol = !server.hasArg("protocol") || !isFalsy(server.arg("protocol"));
   if (updateProtocol && lastValidIrRx.protocol.length() && validProtocol(lastValidIrRx.protocol)) {
     acProtocol = lastValidIrRx.protocol;
-    if (lastValidIrRx.model >= 0) acModel = lastValidIrRx.model;
+    const decode_type_t protocol = strToDecodeType(acProtocol.c_str());
+    acModel = validModelForProtocol(protocol, lastValidIrRx.model)
+                  ? lastValidIrRx.model
+                  : defaultModelForProtocol(protocol);
   }
   air = lastValidIrRx.state;
   normalizeConfig();

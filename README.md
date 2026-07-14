@@ -143,6 +143,14 @@ Supported UI values:
   `wdHeatTime`, `weCoolTemp`, `weCoolTime`, `weCoolTarget`, `weHeatTemp`,
   `weHeatTime`, `weHeatTarget`
 
+`/api/protocols` keeps the `protocols` string array and also returns a `models`
+map for protocols with remote-model variants. The web UI shows a **Remote
+profile** selector only when the selected protocol has multiple variants. This
+is the remote-control profile, not the indoor-unit product model. Changing the
+protocol without supplying `model` selects that protocol's default model;
+invalid protocol/model combinations return HTTP 400. For example, GREE YBOFB
+can be selected with `/api/config?protocol=GREE&model=2`.
+
 `/api/state` includes a `capabilities` object for the selected protocol. The
 firmware currently has explicit capability profiles for `KELVINATOR` and `GREE`;
 other protocols use a conservative generic profile. Unsupported display-light
