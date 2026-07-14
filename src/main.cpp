@@ -312,10 +312,11 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 *{box-sizing:border-box}body{margin:0;font:16px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
 main{width:min(720px,100%);margin:0 auto;padding:18px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.brand{font-weight:800;font-size:24px}.chip{border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted);font-size:13px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:5px;margin-bottom:14px}.tabs button{border:0;min-height:40px;color:var(--muted)}.tabs button.active{color:white}.page{display:none}.page.active{display:block}.pageHead{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:2px 2px 12px}.pageTitle{font-size:20px;font-weight:800}.pageHint{color:var(--muted);font-size:13px;text-align:right}
 .status{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:14px}
 .temp{font-size:70px;font-weight:800;letter-spacing:0;line-height:.92}.temp small{font-size:28px}.meta{color:var(--muted);font-size:15px;margin-top:8px}
 .power{width:92px;height:92px;border:0;border-radius:50%;background:var(--accent);color:white;font-size:38px;box-shadow:0 8px 24px #0002}.power.off{background:#6b7280}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+.grid,.advancedGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.wide{grid-column:1/-1}
 .label{font-size:13px;color:var(--muted);margin-bottom:9px}.seg{display:grid;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:7px}
 button{min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-weight:650}button.active{background:var(--accent);border-color:var(--accent);color:white}
 select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-weight:650;padding:0 10px}
@@ -325,45 +326,69 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
 .debugMsgs{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--muted);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
 .foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;color:var(--muted);font-size:13px}.foot span{border:1px solid var(--line);border-radius:999px;padding:5px 9px}
 @media(pointer:coarse){#backlightSlider{display:none}}
-@media(max-width:520px){main{padding:12px}.grid{grid-template-columns:1fr}.form,.presetForm,.presetConfig{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}}
+@media(max-width:520px){main{padding:12px}.grid,.advancedGrid{grid-template-columns:1fr}.wide{grid-column:auto}.form,.presetForm,.presetConfig{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}.pageHead{display:block}.pageHint{text-align:left;margin-top:3px}}
 </style>
 </head>
 <body>
 <main>
   <div class="top"><div class="brand">IRStation</div><div class="chip" id="net">Connecting</div></div>
-  <section class="status">
-    <div><div class="temp"><span id="temp">--</span><small>C</small></div><div class="meta"><span id="mode">--</span> / Fan <span id="fan">--</span> / Swing <span id="swing">--</span></div></div>
-    <button class="power off" id="power" title="Power">I/O</button>
+  <nav class="tabs" aria-label="Page navigation">
+    <button class="active" data-page="daily" aria-controls="dailyPage" aria-selected="true">Daily</button>
+    <button data-page="advanced" aria-controls="advancedPage" aria-selected="false">Advanced</button>
+  </nav>
+
+  <section class="page active" id="dailyPage" data-view="daily">
+    <section class="status">
+      <div><div class="temp"><span id="temp">--</span><small>C</small></div><div class="meta"><span id="mode">--</span> / Fan <span id="fan">--</span> / Swing <span id="swing">--</span></div></div>
+      <button class="power off" id="power" title="Power">I/O</button>
+    </section>
+    <section class="grid">
+      <div class="panel"><div class="label">Temperature</div><div class="step"><button id="down">-</button><div class="value" id="temp2">--</div><button id="up">+</button></div></div>
+      <div class="panel"><div class="label">Mode</div><div class="seg" id="modes">
+        <button data-v="auto">Auto</button><button data-v="cool">Cool</button><button data-v="heat">Heat</button><button data-v="dry">Dry</button><button data-v="fan">Fan</button>
+      </div></div>
+      <div class="panel"><div class="label">Fan speed</div><div class="seg" id="fans">
+        <button data-v="auto">Auto</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button>
+      </div></div>
+      <div class="panel"><div class="label">Swing</div><div class="seg" id="swings"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
+      <div class="panel" id="lightPanel"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
+    </section>
+    <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="presetConfig">
+      <div class="presetProfile"><div class="label">Workday Cool</div><div class="inputs"><input id="wdCoolTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdCoolTime" type="time"></div></div>
+      <div class="presetProfile"><div class="label">Workday Heat</div><div class="inputs"><input id="wdHeatTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdHeatTime" type="time"></div></div>
+      <div class="presetProfile weekend"><div class="label">Weekend Cool</div><div class="inputs"><input id="weCoolTemp" type="number" min="16" max="30" placeholder="Start"><input id="weCoolTime" type="time"><input id="weCoolTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+      <div class="presetProfile weekend"><div class="label">Weekend Heat</div><div class="inputs"><input id="weHeatTemp" type="number" min="16" max="30" placeholder="Start"><input id="weHeatTime" type="time"><input id="weHeatTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+    </div><button id="savePreset" style="margin-top:10px;width:100%">Save sleep settings</button></div>
   </section>
-  <section class="grid">
-    <div class="panel"><div class="label">Temperature</div><div class="step"><button id="down">-</button><div class="value" id="temp2">--</div><button id="up">+</button></div></div>
-    <div class="panel"><div class="label">Mode</div><div class="seg" id="modes">
-      <button data-v="auto">Auto</button><button data-v="cool">Cool</button><button data-v="heat">Heat</button><button data-v="dry">Dry</button><button data-v="fan">Fan</button>
-    </div></div>
-    <div class="panel"><div class="label">Fan speed</div><div class="seg" id="fans">
-      <button data-v="auto">Auto</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button>
-    </div></div>
-    <div class="panel"><div class="label">Swing</div><div class="seg" id="swings"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
+
+  <section class="page" id="advancedPage" data-view="advanced">
+    <div class="pageHead"><div class="pageTitle">Advanced</div><div class="pageHint">Device, infrared and diagnostics</div></div>
+    <div class="advancedGrid">
+      <div class="panel wide" id="protocolPanel"><div class="label">AC brand</div><select id="protocolSelect"></select></div>
+      <div class="panel" id="modelPanel" style="display:none"><div class="label">Remote profile</div><select id="modelSelect"></select><div class="muted">Remote model, not the indoor-unit product model.</div></div>
+      <div class="panel wide" id="backlightPanel"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
+      <div class="panel wide" id="irPanel"><div class="label">IR receiver</div><div class="foot"><span id="irrx">No signal</span></div><button id="applyIr" style="margin-top:8px">Apply learned state</button></div>
+      <div class="panel wide" id="wifiPanel"><div class="label">Wi-Fi setup</div><div class="form"><input id="ssid" placeholder="SSID"><input id="password" type="password" placeholder="Password"><button id="saveWifi">Save</button></div><div class="muted" id="wifiNote"></div></div>
+      <div class="panel wide" id="debugPanel"><div class="label">Debug Msg</div><pre class="debugMsgs" id="debugMsg">No ESP-NOW messages</pre></div>
+    </div>
   </section>
+
   <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="channel">CH --</span><span id="rssi">RSSI --</span></div>
-  <div class="panel" style="margin-top:12px"><div class="label">AC brand</div><select id="protocolSelect"></select></div>
-  <div class="panel" id="modelPanel" style="display:none;margin-top:12px"><div class="label">Remote profile</div><select id="modelSelect"></select><div class="muted" style="margin-top:8px">Remote model, not the indoor-unit product model.</div></div>
-  <div class="panel" id="lightPanel" style="margin-top:12px"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
-  <div class="panel" id="backlightPanel" style="margin-top:12px"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
-  <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="presetConfig">
-    <div class="presetProfile"><div class="label">Workday Cool</div><div class="inputs"><input id="wdCoolTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdCoolTime" type="time"></div></div>
-    <div class="presetProfile"><div class="label">Workday Heat</div><div class="inputs"><input id="wdHeatTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdHeatTime" type="time"></div></div>
-    <div class="presetProfile weekend"><div class="label">Weekend Cool</div><div class="inputs"><input id="weCoolTemp" type="number" min="16" max="30" placeholder="Start"><input id="weCoolTime" type="time"><input id="weCoolTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
-    <div class="presetProfile weekend"><div class="label">Weekend Heat</div><div class="inputs"><input id="weHeatTemp" type="number" min="16" max="30" placeholder="Start"><input id="weHeatTime" type="time"><input id="weHeatTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
-  </div><button id="savePreset" style="margin-top:10px;width:100%">Save sleep settings</button></div>
-  <div class="panel" id="irPanel" style="margin-top:12px"><div class="label">IR receiver</div><div class="foot"><span id="irrx">No signal</span></div><button id="applyIr" style="margin-top:8px">Apply learned state</button></div>
-  <div class="panel" id="wifiPanel" style="margin-top:12px"><div class="label">Wi-Fi setup</div><div class="form"><input id="ssid" placeholder="SSID"><input id="password" type="password" placeholder="Password"><button id="saveWifi">Save</button></div><div class="muted" id="wifiNote"></div></div>
-  <div class="panel" id="debugPanel" style="margin-top:12px"><div class="label">Debug Msg</div><pre class="debugMsgs" id="debugMsg">No ESP-NOW messages</pre></div>
 </main>
 <script>
 const labels={mode:{auto:'Auto',cool:'Cool',heat:'Heat',dry:'Dry',fan:'Fan'},fan:{auto:'Auto','1':'1','2':'2','3':'3','4':'4','5':'5'},swing:{true:'On',false:'Off'}};
 let state=null;
 let protocolModels={};
+const PAGE_STORAGE_KEY='irstation.activePage';
+function savedPage(){
+ try{const page=localStorage.getItem(PAGE_STORAGE_KEY); return page==='advanced'?'advanced':'daily';}catch(e){return 'daily';}
+}
+function selectPage(page,persist=true){
+ const selected=page==='advanced'?'advanced':'daily';
+ document.querySelectorAll('[data-view]').forEach(el=>{const active=el.dataset.view===selected; el.classList.toggle('active',active); el.setAttribute('aria-hidden',active?'false':'true');});
+ document.querySelectorAll('[data-page]').forEach(el=>{const active=el.dataset.page===selected; el.classList.toggle('active',active); el.setAttribute('aria-selected',active?'true':'false');});
+ if(persist){try{localStorage.setItem(PAGE_STORAGE_KEY,selected);}catch(e){} window.scrollTo(0,0);}
+}
 async function api(path){const r=await fetch(path,{cache:'no-store'}); if(!r.ok)throw new Error(await r.text()); return r.json();}
 function mark(group,value){document.querySelectorAll(group+' button').forEach(b=>b.classList.toggle('active',b.dataset.v==value));}
 async function loadProtocols(){
@@ -374,6 +399,7 @@ async function loadProtocols(){
 function renderModelSelect(protocol,model){
  const options=protocolModels[protocol]||[]; const panel=document.getElementById('modelPanel'); const el=document.getElementById('modelSelect');
  panel.style.display=options.length>1?'block':'none';
+ document.getElementById('protocolPanel').classList.toggle('wide',options.length<=1);
  if(el.dataset.protocol!==protocol){
   el.dataset.protocol=protocol; el.innerHTML='';
   options.forEach(m=>{const o=document.createElement('option'); o.value=String(m.value); o.textContent=m.name+' ('+m.value+')'; el.appendChild(o);});
@@ -454,6 +480,8 @@ document.getElementById('runWeekend').onclick=()=>api('/api/preset/run?kind=week
 document.getElementById('savePreset').onclick=()=>api('/api/preset?'+presetConfigQuery()).then(render);
 document.getElementById('cancelPreset').onclick=()=>api('/api/preset/cancel').then(render);
 document.getElementById('saveWifi').onclick=()=>api('/api/config?ssid='+encodeURIComponent(document.getElementById('ssid').value)+'&password='+encodeURIComponent(document.getElementById('password').value)).then(render);
+document.querySelectorAll('[data-page]').forEach(el=>el.onclick=()=>selectPage(el.dataset.page));
+selectPage(savedPage(),false);
 loadProtocols().then(refresh).catch(refresh); setInterval(refresh,5000);
 </script>
 </body>

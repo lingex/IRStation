@@ -98,6 +98,12 @@ If no SSID is configured, the device starts an AP named `IRStation` with passwor
 When the device is in AP mode, the web UI shows a Wi-Fi setup panel. Saving
 SSID/password updates `/config.json`; reboot the device to join the new network.
 
+The web UI is split into **Daily** and **Advanced** views. Daily contains the
+normal A/C controls and sleep presets. Advanced contains the A/C protocol and
+remote profile, LCD backlight, IR receiver/learning, Wi-Fi setup, and debug
+messages. The selected view is stored in the browser, so refreshing the page
+returns to the same view; a browser with no saved selection starts on Daily.
+
 `id` is this receiver's ESP-NOW identity. ESP-NOW commands are JSON messages addressed with `to`, for example `{"to":"irstation-01","uid":"unique-id","cmd":"power","chk":"CRC32"}`. Use `"to":"all"` to broadcast to every receiver. `chk` is required and is the uppercase CRC32 of canonical JSON with top-level `chk` omitted. Repeated messages with the same `uid` are ignored after the first handled command.
 
 ## HTTP GET APIs
