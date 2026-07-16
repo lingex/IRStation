@@ -100,13 +100,17 @@ SSID/password updates `/config.json`; reboot the device to join the new network.
 
 The web UI is split into **Daily** and **Advanced** views. Daily contains the
 normal A/C controls and sleep presets. Advanced contains the A/C protocol and
-remote profile, LCD backlight, IR receiver/learning, Wi-Fi setup, and debug
-messages. The selected view is stored in the browser, so refreshing the page
-returns to the same view; a browser with no saved selection starts on Daily.
+remote profile, LCD backlight, IR receiver/learning, Wi-Fi setup, a collapsible
+`/config.json` editor, and debug messages. The config editor validates JSON in
+the browser and again on the device, then saves and hot-loads supported settings.
+Wi-Fi changes are marked as requiring a restart, and the editor includes a
+device restart button. The selected view is stored in the browser, so refreshing
+the page returns to the same view; a browser with no saved selection starts on
+Daily.
 
 `id` is this receiver's ESP-NOW identity. ESP-NOW commands are JSON messages addressed with `to`, for example `{"to":"irstation-01","uid":"unique-id","cmd":"power","chk":"CRC32"}`. Use `"to":"all"` to broadcast to every receiver. `chk` is required and is the uppercase CRC32 of canonical JSON with top-level `chk` omitted. Repeated messages with the same `uid` are ignored after the first handled command.
 
-## HTTP GET APIs
+## HTTP APIs
 
 All control endpoints update the persisted state and send an IR command unless `send=0` is provided.
 Control/config/send endpoints return HTTP 409 while the LCD is in settings mode,
@@ -132,6 +136,9 @@ so browser or automation commands cannot overwrite an in-progress button edit.
 | IR protocol config | `/api/config?protocol=KELVINATOR&model=1` |
 | LCD backlight brightness | `/api/config?brightness=30` |
 | Wi-Fi config | `/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD` |
+| Read raw JSON config | `GET /api/config-file` |
+| Validate, save, and hot-load raw JSON config | `POST /api/config-file` with the JSON document as the request body |
+| Restart device | `POST /api/restart` |
 | Reload JSON config | `/api/reload-config` |
 | API examples | `/api/help` |
 
@@ -148,6 +155,8 @@ Supported UI values:
 - sleep preset config args: `wdCoolTemp`, `wdCoolTime`, `wdHeatTemp`,
   `wdHeatTime`, `weCoolTemp`, `weCoolTime`, `weCoolTarget`, `weHeatTemp`,
   `weHeatTime`, `weHeatTarget`
+- a sleep preset `startTemp` value of `0` keeps the current temperature when
+  the preset starts; scheduled off/target-temperature actions are unchanged
 
 `/api/protocols` keeps the `protocols` string array and also returns a `models`
 map for protocols with remote-model variants. The web UI shows a **Remote

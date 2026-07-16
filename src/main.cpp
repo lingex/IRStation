@@ -90,6 +90,10 @@ constexpr size_t IR_RX_SUMMARY_MAX_LENGTH = 320;
 constexpr size_t ESPNOW_MAX_PAYLOAD_SIZE = 250;
 constexpr uint8_t ESPNOW_DEBUG_MSG_COUNT = 3;
 constexpr const char *CONFIG_FILE = "/config.json";
+constexpr const char *CONFIG_TEMP_FILE = "/config.tmp";
+constexpr const char *CONFIG_BACKUP_FILE = "/config.bak";
+constexpr size_t CONFIG_FILE_MAX_SIZE = 16 * 1024;
+constexpr uint16_t DEVICE_RESTART_DELAY_MS = 1000;
 constexpr const char *DEFAULT_DEVICE_ID = "IRStation";
 
 U8G2_ST7567_ERC12864_F_4W_SW_SPI u8g2(
@@ -270,6 +274,7 @@ bool fileSystemReady = false;
 bool configLoaded = false;
 bool wifiRestartRequired = false;
 bool configSavePending = false;
+bool deviceRestartPending = false;
 bool settingsMode = false;
 bool hasLastValidIrRx = false;
 bool displayDirty = true;
@@ -284,6 +289,7 @@ uint8_t irRxEventNextIndex = 0;
 uint8_t irRxEventCount = 0;
 uint32_t irRxNextSequence = 1;
 uint32_t configSaveDueMs = 0;
+uint32_t deviceRestartDueMs = 0;
 time_t presetActionEpoch = 0;
 LcdNoticeKind lcdNoticeKind = LcdNoticeKind::Info;
 SleepPresetProfile weekdayCoolPreset = {DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKDAY_SLEEP_HOUR, DEFAULT_WEEKDAY_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
@@ -321,12 +327,14 @@ main{width:min(720px,100%);margin:0 auto;padding:18px}
 button{min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-weight:650}button.active{background:var(--accent);border-color:var(--accent);color:white}
 select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-weight:650;padding:0 10px}
 input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;padding:0 10px}
+textarea{width:100%;min-height:360px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:12px;font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
 .step{display:grid;grid-template-columns:54px 1fr 54px;gap:8px;align-items:center}.step button{font-size:26px}.value{text-align:center;font-size:32px;font-weight:800}
 .form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px}.presetForm{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center}.presetConfig{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}.presetProfile{border-top:1px solid var(--line);padding-top:8px}.presetProfile .inputs{display:grid;grid-template-columns:1fr 1fr;gap:7px}.presetProfile.weekend .inputs{grid-template-columns:1fr 1fr 1fr}.muted{color:var(--muted);font-size:13px;margin-top:8px}
+.configHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.configHead .label{margin:0}.configActions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}.configStatus{min-height:20px;margin-top:8px;color:var(--muted);font-size:13px}.configStatus.ok{color:var(--accent)}.configStatus.error{color:#dc2626}.configEditor{margin-top:12px}.restartNeeded{border-color:var(--warn);color:var(--warn)}
 .debugMsgs{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--muted);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
 .foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;color:var(--muted);font-size:13px}.foot span{border:1px solid var(--line);border-radius:999px;padding:5px 9px}
 @media(pointer:coarse){#backlightSlider{display:none}}
-@media(max-width:520px){main{padding:12px}.grid,.advancedGrid{grid-template-columns:1fr}.wide{grid-column:auto}.form,.presetForm,.presetConfig{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}.pageHead{display:block}.pageHint{text-align:left;margin-top:3px}}
+@media(max-width:520px){main{padding:12px}.grid,.advancedGrid{grid-template-columns:1fr}.wide{grid-column:auto}.form,.presetForm,.presetConfig,.configActions{grid-template-columns:1fr}.temp{font-size:58px}.power{width:78px;height:78px}.status{padding:14px}.pageHead{display:block}.pageHint{text-align:left;margin-top:3px}.configHead{align-items:stretch;flex-direction:column}}
 </style>
 </head>
 <body>
@@ -353,11 +361,11 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
       <div class="panel"><div class="label">Swing</div><div class="seg" id="swings"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
       <div class="panel" id="lightPanel"><div class="label">Indoor display light</div><div class="seg" id="lights"><button data-v="off">Off</button><button data-v="on">On</button></div></div>
     </section>
-    <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="presetConfig">
-      <div class="presetProfile"><div class="label">Workday Cool</div><div class="inputs"><input id="wdCoolTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdCoolTime" type="time"></div></div>
-      <div class="presetProfile"><div class="label">Workday Heat</div><div class="inputs"><input id="wdHeatTemp" type="number" min="16" max="30" placeholder="Temp"><input id="wdHeatTime" type="time"></div></div>
-      <div class="presetProfile weekend"><div class="label">Weekend Cool</div><div class="inputs"><input id="weCoolTemp" type="number" min="16" max="30" placeholder="Start"><input id="weCoolTime" type="time"><input id="weCoolTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
-      <div class="presetProfile weekend"><div class="label">Weekend Heat</div><div class="inputs"><input id="weHeatTemp" type="number" min="16" max="30" placeholder="Start"><input id="weHeatTime" type="time"><input id="weHeatTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+    <div class="panel" id="presetPanel" style="margin-top:12px"><div class="label">Sleep preset</div><div class="seg"><button id="runWeekday">Workday</button><button id="runWeekend">Weekend</button><button id="cancelPreset">Cancel</button></div><div class="muted" id="presetNote"></div><div class="muted">Set the start temperature to 0 to keep the current temperature.</div><div class="presetConfig">
+      <div class="presetProfile"><div class="label">Workday Cool</div><div class="inputs"><input id="wdCoolTemp" type="number" min="0" max="30" placeholder="Temp"><input id="wdCoolTime" type="time"></div></div>
+      <div class="presetProfile"><div class="label">Workday Heat</div><div class="inputs"><input id="wdHeatTemp" type="number" min="0" max="30" placeholder="Temp"><input id="wdHeatTime" type="time"></div></div>
+      <div class="presetProfile weekend"><div class="label">Weekend Cool</div><div class="inputs"><input id="weCoolTemp" type="number" min="0" max="30" placeholder="Start"><input id="weCoolTime" type="time"><input id="weCoolTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
+      <div class="presetProfile weekend"><div class="label">Weekend Heat</div><div class="inputs"><input id="weHeatTemp" type="number" min="0" max="30" placeholder="Start"><input id="weHeatTime" type="time"><input id="weHeatTarget" type="number" min="16" max="30" placeholder="Target"></div></div>
     </div><button id="savePreset" style="margin-top:10px;width:100%">Save sleep settings</button></div>
   </section>
 
@@ -369,6 +377,7 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
       <div class="panel wide" id="backlightPanel"><div class="label">LCD backlight</div><div class="step"><button id="backlightDown">-</button><div class="value" id="backlightValue">--%</div><button id="backlightUp">+</button></div><input id="backlightSlider" type="range" min="1" max="100" step="1" style="margin-top:8px"><div class="seg" id="backlightQuick" style="margin-top:8px"><button data-v="10">10%</button><button data-v="30">30%</button><button data-v="60">60%</button><button data-v="100">100%</button></div></div>
       <div class="panel wide" id="irPanel"><div class="label">IR receiver</div><div class="foot"><span id="irrx">No signal</span></div><button id="applyIr" style="margin-top:8px">Apply learned state</button></div>
       <div class="panel wide" id="wifiPanel"><div class="label">Wi-Fi setup</div><div class="form"><input id="ssid" placeholder="SSID"><input id="password" type="password" placeholder="Password"><button id="saveWifi">Save</button></div><div class="muted" id="wifiNote"></div></div>
+      <div class="panel wide" id="configFilePanel"><div class="configHead"><div><div class="label">Configuration file</div><div class="muted" style="margin-top:0">Directly edit /config.json. Saving validates and hot-loads supported settings.</div></div><button id="toggleConfigFile">Edit config.json</button></div><div class="configEditor" id="configEditorWrap" hidden><textarea id="configEditor" aria-label="config.json editor" spellcheck="false"></textarea><div class="configStatus" id="configStatus">Not loaded</div><div class="configActions"><button id="formatConfig">Check & format</button><button id="reloadConfigFile">Reload file</button><button id="saveConfigFile">Save & hot-load</button><button id="restartDevice">Restart device</button></div></div></div>
       <div class="panel wide" id="debugPanel"><div class="label">Debug Msg</div><pre class="debugMsgs" id="debugMsg">No ESP-NOW messages</pre></div>
     </div>
   </section>
@@ -379,6 +388,8 @@ input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
 const labels={mode:{auto:'Auto',cool:'Cool',heat:'Heat',dry:'Dry',fan:'Fan'},fan:{auto:'Auto','1':'1','2':'2','3':'3','4':'4','5':'5'},swing:{true:'On',false:'Off'}};
 let state=null;
 let protocolModels={};
+let configEditorLoaded=false;
+let configValidationTimer=0;
 const PAGE_STORAGE_KEY='irstation.activePage';
 function savedPage(){
  try{const page=localStorage.getItem(PAGE_STORAGE_KEY); return page==='advanced'?'advanced':'daily';}catch(e){return 'daily';}
@@ -389,7 +400,13 @@ function selectPage(page,persist=true){
  document.querySelectorAll('[data-page]').forEach(el=>{const active=el.dataset.page===selected; el.classList.toggle('active',active); el.setAttribute('aria-selected',active?'true':'false');});
  if(persist){try{localStorage.setItem(PAGE_STORAGE_KEY,selected);}catch(e){} window.scrollTo(0,0);}
 }
-async function api(path){const r=await fetch(path,{cache:'no-store'}); if(!r.ok)throw new Error(await r.text()); return r.json();}
+async function apiRequest(path,options={}){
+ const r=await fetch(path,Object.assign({cache:'no-store'},options)); const text=await r.text(); let data=null;
+ try{data=text?JSON.parse(text):{};}catch(e){if(r.ok)throw new Error('Invalid JSON response');}
+ if(!r.ok)throw new Error(data&&data.error?data.error:(text||('HTTP '+r.status)));
+ return data;
+}
+async function api(path){return apiRequest(path);}
 function mark(group,value){document.querySelectorAll(group+' button').forEach(b=>b.classList.toggle('active',b.dataset.v==value));}
 async function loadProtocols(){
  const s=await api('/api/protocols'); protocolModels=s.models||{};
@@ -435,6 +452,68 @@ function renderDebugMsg(s){
  const msgs=(s.espnow&&s.espnow.debugMsg)||[];
  document.getElementById('debugMsg').textContent=msgs.length?msgs.join('\n'):'No ESP-NOW messages';
 }
+function setConfigStatus(message,kind=''){
+ const el=document.getElementById('configStatus'); el.textContent=message; el.className='configStatus'+(kind?' '+kind:'');
+}
+function configJsonError(error,text){
+ const message=error&&error.message?error.message:String(error); const match=message.match(/position\s+(\d+)/i);
+ if(!match)return message;
+ const position=Math.min(Number(match[1]),text.length); const before=text.slice(0,position); const lines=before.split('\n');
+ return 'JSON error at line '+lines.length+', column '+(lines[lines.length-1].length+1)+': '+message;
+}
+function parseConfigEditor(showValid=true){
+ const text=document.getElementById('configEditor').value;
+ try{
+  const value=JSON.parse(text);
+  if(!value||Array.isArray(value)||typeof value!=='object')throw new Error('The JSON root must be an object');
+  if(showValid)setConfigStatus('JSON syntax is valid','ok');
+  return value;
+ }catch(error){
+  setConfigStatus(configJsonError(error,text),'error');
+  return null;
+ }
+}
+async function loadConfigEditor(){
+ setConfigStatus('Loading config.json...');
+ const response=await fetch('/api/config-file',{cache:'no-store'}); const text=await response.text();
+ if(!response.ok){
+  let message=text; try{const data=JSON.parse(text); message=data.error||message;}catch(e){}
+  throw new Error(message);
+ }
+ document.getElementById('configEditor').value=text; configEditorLoaded=true;
+ parseConfigEditor(true);
+}
+async function toggleConfigEditor(){
+ const wrap=document.getElementById('configEditorWrap'); const button=document.getElementById('toggleConfigFile'); const opening=wrap.hidden;
+ wrap.hidden=!opening; button.textContent=opening?'Hide config.json':'Edit config.json';
+ if(opening&&!configEditorLoaded){
+  try{await loadConfigEditor();}catch(error){setConfigStatus(error.message,'error');}
+ }
+}
+function formatConfigEditor(){
+ const value=parseConfigEditor(false); if(!value)return;
+ document.getElementById('configEditor').value=JSON.stringify(value,null,2)+'\n';
+ setConfigStatus('JSON syntax is valid and formatting has been applied','ok');
+}
+async function saveConfigEditor(){
+ if(!parseConfigEditor(false))return;
+ const button=document.getElementById('saveConfigFile'); button.disabled=true; setConfigStatus('Saving and hot-loading...');
+ try{
+  const result=await apiRequest('/api/config-file',{method:'POST',headers:{'Content-Type':'application/json'},body:document.getElementById('configEditor').value});
+  await loadConfigEditor(); await refresh();
+  setConfigStatus(result.wifiRestartRequired?'Saved and hot-loaded. Wi-Fi changed; restart is required.':'Saved and hot-loaded successfully.','ok');
+ }catch(error){setConfigStatus(error.message,'error');}
+ finally{button.disabled=false;}
+}
+async function restartDevice(){
+ if(!confirm('Restart IRStation now? Unsaved editor changes will be lost.'))return;
+ const button=document.getElementById('restartDevice'); button.disabled=true;
+ try{
+  await apiRequest('/api/restart',{method:'POST'}); setConfigStatus('Restart command sent. Reconnect in a few seconds.','ok');
+  document.getElementById('net').textContent='Restarting';
+  setTimeout(()=>location.reload(),5000);
+ }catch(error){setConfigStatus(error.message,'error'); button.disabled=false;}
+}
 function render(s){
  state=s.state; state.backlightBrightness=s.device.backlightBrightness||30; document.getElementById('temp').textContent=state.temp; document.getElementById('temp2').textContent=state.temp+'C';
  document.getElementById('mode').textContent=labels.mode[state.mode]||state.mode; document.getElementById('fan').textContent=labels.fan[state.fan]||state.fan;
@@ -451,6 +530,7 @@ function render(s){
  document.getElementById('presetNote').textContent=presetLabel(preset); document.getElementById('cancelPreset').disabled=!preset.active;
  const rx=s.ir.rx||{}; document.getElementById('irrx').textContent=rx.lastMs?(rx.protocol+' '+(rx.acDecoded?'AC':'raw')+' '+(rx.summary||'')):'No signal'; document.getElementById('applyIr').disabled=!rx.acDecoded;
  document.getElementById('wifiPanel').style.display=(s.device.wifi=='ap'||s.config.wifiRestartRequired)?'block':'none'; document.getElementById('wifiNote').textContent=s.config.wifiRestartRequired?'Saved. Wait 10s, then reboot to use the new Wi-Fi.':'AP mode setup';
+ document.getElementById('restartDevice').classList.toggle('restartNeeded',!!s.config.wifiRestartRequired);
  renderDebugMsg(s);
 }
 async function refresh(){try{render(await api('/api/state'))}catch(e){document.getElementById('net').textContent='Offline'}}
@@ -480,6 +560,15 @@ document.getElementById('runWeekend').onclick=()=>api('/api/preset/run?kind=week
 document.getElementById('savePreset').onclick=()=>api('/api/preset?'+presetConfigQuery()).then(render);
 document.getElementById('cancelPreset').onclick=()=>api('/api/preset/cancel').then(render);
 document.getElementById('saveWifi').onclick=()=>api('/api/config?ssid='+encodeURIComponent(document.getElementById('ssid').value)+'&password='+encodeURIComponent(document.getElementById('password').value)).then(render);
+document.getElementById('toggleConfigFile').onclick=toggleConfigEditor;
+document.getElementById('formatConfig').onclick=formatConfigEditor;
+document.getElementById('reloadConfigFile').onclick=()=>loadConfigEditor().catch(error=>setConfigStatus(error.message,'error'));
+document.getElementById('saveConfigFile').onclick=saveConfigEditor;
+document.getElementById('restartDevice').onclick=restartDevice;
+document.getElementById('configEditor').oninput=()=>{
+ clearTimeout(configValidationTimer);
+ configValidationTimer=setTimeout(()=>parseConfigEditor(true),250);
+};
 document.querySelectorAll('[data-page]').forEach(el=>el.onclick=()=>selectPage(el.dataset.page));
 selectPage(savedPage(),false);
 loadProtocols().then(refresh).catch(refresh); setInterval(refresh,5000);
@@ -867,10 +956,12 @@ void cancelPresetSchedule(bool showNotice = false) {
 
 bool normalizeSleepPresetProfile(SleepPresetProfile &profile, const AcCapabilities &capabilities) {
   bool changed = false;
-  const uint8_t startTemp = constrain(profile.startTemp, capabilities.tempMin, capabilities.tempMax);
-  if (startTemp != profile.startTemp) {
-    profile.startTemp = startTemp;
-    changed = true;
+  if (profile.startTemp != 0) {
+    const uint8_t startTemp = constrain(profile.startTemp, capabilities.tempMin, capabilities.tempMax);
+    if (startTemp != profile.startTemp) {
+      profile.startTemp = startTemp;
+      changed = true;
+    }
   }
   const uint8_t targetTemp = constrain(profile.targetTemp, capabilities.tempMin, capabilities.tempMax);
   if (targetTemp != profile.targetTemp) {
@@ -1057,6 +1148,56 @@ bool saveConfigFile() {
   return true;
 }
 
+bool stageConfigDocument(JsonDocument &doc, bool &hadPreviousConfig) {
+  if (!fileSystemReady) {
+    configError = "LittleFS is not mounted";
+    return false;
+  }
+
+  LittleFS.remove(CONFIG_TEMP_FILE);
+  LittleFS.remove(CONFIG_BACKUP_FILE);
+
+  File file = LittleFS.open(CONFIG_TEMP_FILE, "w");
+  if (!file) {
+    configError = "Unable to create temporary config file";
+    return false;
+  }
+
+  const size_t written = serializeJsonPretty(doc, file);
+  file.println();
+  file.close();
+  if (!written) {
+    LittleFS.remove(CONFIG_TEMP_FILE);
+    configError = "Unable to serialize temporary config file";
+    return false;
+  }
+
+  hadPreviousConfig = LittleFS.exists(CONFIG_FILE);
+  if (hadPreviousConfig && !LittleFS.rename(CONFIG_FILE, CONFIG_BACKUP_FILE)) {
+    LittleFS.remove(CONFIG_TEMP_FILE);
+    configError = "Unable to back up current config file";
+    return false;
+  }
+
+  if (!LittleFS.rename(CONFIG_TEMP_FILE, CONFIG_FILE)) {
+    if (hadPreviousConfig) LittleFS.rename(CONFIG_BACKUP_FILE, CONFIG_FILE);
+    LittleFS.remove(CONFIG_TEMP_FILE);
+    configError = "Unable to replace config file";
+    return false;
+  }
+
+  return true;
+}
+
+void finishStagedConfig(bool keepNewConfig, bool hadPreviousConfig) {
+  if (!keepNewConfig) {
+    LittleFS.remove(CONFIG_FILE);
+    if (hadPreviousConfig) LittleFS.rename(CONFIG_BACKUP_FILE, CONFIG_FILE);
+  }
+  LittleFS.remove(CONFIG_TEMP_FILE);
+  LittleFS.remove(CONFIG_BACKUP_FILE);
+}
+
 void scheduleConfigSave() {
   configSavePending = true;
   configSaveDueMs = millis() + CONFIG_SAVE_DELAY_MS;
@@ -1095,7 +1236,22 @@ void loadSleepPresetProfile(JsonVariant value, SleepPresetProfile &profile) {
   }
 }
 
-void loadConfigFile() {
+void resetConfigBackedValues() {
+  deviceId = DEFAULT_DEVICE_ID;
+  wifiSsid = WIFI_SSID;
+  wifiPassword = WIFI_PASSWORD;
+  air = AirState{};
+  acProtocol = DEFAULT_AC_PROTOCOL;
+  acModel = DEFAULT_AC_MODEL;
+  setBacklightBrightness(DEFAULT_LCD_BACKLIGHT_BRIGHTNESS);
+  weekdayCoolPreset = SleepPresetProfile{DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKDAY_SLEEP_HOUR, DEFAULT_WEEKDAY_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+  weekdayHeatPreset = SleepPresetProfile{DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKDAY_SLEEP_HOUR, DEFAULT_WEEKDAY_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+  weekendCoolPreset = SleepPresetProfile{DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKEND_SLEEP_HOUR, DEFAULT_WEEKEND_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+  weekendHeatPreset = SleepPresetProfile{DEFAULT_SLEEP_START_TEMP, DEFAULT_WEEKEND_SLEEP_HOUR, DEFAULT_WEEKEND_SLEEP_MINUTE, DEFAULT_SLEEP_TARGET_TEMP};
+  cancelPresetSchedule(false);
+}
+
+void loadConfigFile(bool recoverFiles = true) {
   configLoaded = false;
   if (!fileSystemReady) fileSystemReady = LittleFS.begin(false, "/littlefs", 10, "littlefs");
   if (!fileSystemReady) {
@@ -1104,8 +1260,18 @@ void loadConfigFile() {
     return;
   }
 
+  if (recoverFiles) {
+    LittleFS.remove(CONFIG_TEMP_FILE);
+    if (!LittleFS.exists(CONFIG_FILE) && LittleFS.exists(CONFIG_BACKUP_FILE)) {
+      LittleFS.rename(CONFIG_BACKUP_FILE, CONFIG_FILE);
+    } else if (LittleFS.exists(CONFIG_FILE)) {
+      LittleFS.remove(CONFIG_BACKUP_FILE);
+    }
+  }
+
   if (!LittleFS.exists(CONFIG_FILE)) {
     configError = "";
+    resetConfigBackedValues();
     normalizeConfig();
     saveConfigFile();
     return;
@@ -1126,6 +1292,8 @@ void loadConfigFile() {
     normalizeConfig();
     return;
   }
+
+  resetConfigBackedValues();
 
   JsonVariant deviceIdValue = doc["id"];
   if (!deviceIdValue.isNull()) deviceId = deviceIdValue.as<String>();
@@ -1477,7 +1645,7 @@ bool runPresetAction(SleepPresetKind kind) {
 
   cancelPresetSchedule(false);
   air.power = true;
-  air.temp = profile.startTemp;
+  if (profile.startTemp != 0) air.temp = profile.startTemp;
   normalizeConfig();
   saveState();
   if (!sendCurrentAc()) return false;
@@ -1733,6 +1901,8 @@ String stateJson() {
   json += wifiRestartRequired ? "true" : "false";
   json += ",\"savePending\":";
   json += configSavePending ? "true" : "false";
+  json += ",\"restartPending\":";
+  json += deviceRestartPending ? "true" : "false";
   json += ",\"saveDelayMs\":";
   json += CONFIG_SAVE_DELAY_MS;
   json += ",\"error\":\"";
@@ -2142,22 +2312,26 @@ bool parseSleepPresetKindArg(SleepPresetKind &kind) {
   return false;
 }
 
-bool parsePresetTempArg(const String &value, uint8_t &temp) {
+bool parsePresetTempArg(const String &value, uint8_t &temp, bool allowZero = false) {
   if (!value.length()) return false;
   for (uint8_t i = 0; i < value.length(); i++) {
     if (!isDigit(value[i])) return false;
   }
   const AcCapabilities capabilities = currentCapabilities();
   const int parsed = value.toInt();
+  if (allowZero && parsed == 0) {
+    temp = 0;
+    return true;
+  }
   if (parsed < capabilities.tempMin || parsed > capabilities.tempMax) return false;
   temp = static_cast<uint8_t>(parsed);
   return true;
 }
 
-bool updatePresetTempArg(const char *argName, uint8_t &target, bool &changed) {
+bool updatePresetTempArg(const char *argName, uint8_t &target, bool &changed, bool allowZero = false) {
   if (!server.hasArg(argName)) return true;
   uint8_t value;
-  if (!parsePresetTempArg(server.arg(argName), value)) return false;
+  if (!parsePresetTempArg(server.arg(argName), value, allowZero)) return false;
   target = value;
   changed = true;
   return true;
@@ -2175,14 +2349,14 @@ bool updatePresetTimeArg(const char *argName, SleepPresetProfile &profile, bool 
 }
 
 bool applySleepPresetConfigArgs(bool &changed) {
-  if (!updatePresetTempArg("wdCoolTemp", weekdayCoolPreset.startTemp, changed)) return false;
+  if (!updatePresetTempArg("wdCoolTemp", weekdayCoolPreset.startTemp, changed, true)) return false;
   if (!updatePresetTimeArg("wdCoolTime", weekdayCoolPreset, changed)) return false;
-  if (!updatePresetTempArg("wdHeatTemp", weekdayHeatPreset.startTemp, changed)) return false;
+  if (!updatePresetTempArg("wdHeatTemp", weekdayHeatPreset.startTemp, changed, true)) return false;
   if (!updatePresetTimeArg("wdHeatTime", weekdayHeatPreset, changed)) return false;
-  if (!updatePresetTempArg("weCoolTemp", weekendCoolPreset.startTemp, changed)) return false;
+  if (!updatePresetTempArg("weCoolTemp", weekendCoolPreset.startTemp, changed, true)) return false;
   if (!updatePresetTimeArg("weCoolTime", weekendCoolPreset, changed)) return false;
   if (!updatePresetTempArg("weCoolTarget", weekendCoolPreset.targetTemp, changed)) return false;
-  if (!updatePresetTempArg("weHeatTemp", weekendHeatPreset.startTemp, changed)) return false;
+  if (!updatePresetTempArg("weHeatTemp", weekendHeatPreset.startTemp, changed, true)) return false;
   if (!updatePresetTimeArg("weHeatTime", weekendHeatPreset, changed)) return false;
   if (!updatePresetTempArg("weHeatTarget", weekendHeatPreset.targetTemp, changed)) return false;
   return true;
@@ -2322,6 +2496,124 @@ void handleReloadConfig() {
   sendApi(stateJson());
 }
 
+void handleConfigFileGet() {
+  noteActivity();
+  if (!fileSystemReady) {
+    sendError(503, "LittleFS is not mounted");
+    return;
+  }
+
+  if (configSavePending) {
+    if (!saveConfigFile()) {
+      sendError(500, configError);
+      return;
+    }
+    configSavePending = false;
+  }
+
+  if (!LittleFS.exists(CONFIG_FILE) && !saveConfigFile()) {
+    sendError(500, configError);
+    return;
+  }
+
+  File file = LittleFS.open(CONFIG_FILE, "r");
+  if (!file) {
+    sendError(500, "Unable to read config file");
+    return;
+  }
+  if (file.size() > CONFIG_FILE_MAX_SIZE) {
+    file.close();
+    sendError(413, "Config file is too large");
+    return;
+  }
+
+  String content = file.readString();
+  file.close();
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json; charset=utf-8", content);
+}
+
+void handleConfigFileSave() {
+  noteActivity();
+  if (rejectIfSettingsMode()) return;
+  if (!fileSystemReady) {
+    sendError(503, "LittleFS is not mounted");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  if (!body.length()) {
+    sendError(400, "Config JSON body is empty");
+    return;
+  }
+  if (body.length() > CONFIG_FILE_MAX_SIZE) {
+    sendError(413, "Config JSON is too large");
+    return;
+  }
+
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, body);
+  if (error) {
+    sendError(400, "Invalid config JSON: " + String(error.c_str()));
+    return;
+  }
+  if (!doc.is<JsonObject>()) {
+    sendError(400, "Config JSON root must be an object");
+    return;
+  }
+
+  const String oldSsid = wifiSsid;
+  const String oldPassword = wifiPassword;
+  configSavePending = false;
+
+  bool hadPreviousConfig = false;
+  if (!stageConfigDocument(doc, hadPreviousConfig)) {
+    sendError(500, configError);
+    return;
+  }
+
+  loadConfigFile(false);
+  if (configError.length()) {
+    const String loadError = configError;
+    finishStagedConfig(false, hadPreviousConfig);
+    loadConfigFile();
+    sendError(500, "Saved config could not be loaded: " + loadError);
+    return;
+  }
+
+  finishStagedConfig(true, hadPreviousConfig);
+  if (wifiSsid != oldSsid || wifiPassword != oldPassword) wifiRestartRequired = true;
+  displayDirty = true;
+  showLcdNotice(wifiRestartRequired ? "SAVE / REBOOT" : "CONFIG LOADED",
+                wifiRestartRequired ? LcdNoticeKind::Warning : LcdNoticeKind::Success);
+
+  String json = "{\"ok\":true,\"saved\":true,\"hotReloaded\":true,\"wifiRestartRequired\":";
+  json += wifiRestartRequired ? "true" : "false";
+  json += ",\"file\":\"";
+  json += CONFIG_FILE;
+  json += "\"}";
+  sendApi(json);
+}
+
+void handleRestart() {
+  noteActivity();
+  if (rejectIfSettingsMode()) return;
+
+  if (configSavePending) {
+    if (!saveConfigFile()) {
+      sendError(500, configError);
+      return;
+    }
+    configSavePending = false;
+  }
+
+  deviceRestartPending = true;
+  deviceRestartDueMs = millis() + DEVICE_RESTART_DELAY_MS;
+  showLcdNotice("RESTARTING", LcdNoticeKind::Warning, DEVICE_RESTART_DELAY_MS);
+  sendApi("{\"ok\":true,\"restarting\":true}");
+}
+
 void handleSend() {
   noteActivity();
   if (rejectIfSettingsMode()) return;
@@ -2360,7 +2652,7 @@ void handleIrApply() {
 
 void handleHelp() {
   noteActivity();
-  sendApi(F("{\"ok\":true,\"configFile\":\"/config.json\",\"endpoints\":[\"/api/state\",\"/api/protocols\",\"/api/control?power=on&mode=cool&temp=26&fan=auto&swing=off&light=on\",\"/api/power?value=toggle\",\"/api/temp?delta=1\",\"/api/mode?value=heat\",\"/api/fan?value=5\",\"/api/swing?value=toggle\",\"/api/light?value=toggle\",\"/api/preset?wdCoolTemp=25&wdCoolTime=07:50&weCoolTarget=27\",\"/api/preset/run?kind=weekday\",\"/api/preset/run?kind=weekend\",\"/api/preset/cancel\",\"/api/send\",\"/api/ir\",\"/api/ir/apply\",\"/api/config?protocol=KELVINATOR&model=1\",\"/api/config?brightness=30\",\"/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD\",\"/api/reload-config\"]}"));
+  sendApi(F("{\"ok\":true,\"configFile\":\"/config.json\",\"endpoints\":[\"/api/state\",\"/api/protocols\",\"/api/control?power=on&mode=cool&temp=26&fan=auto&swing=off&light=on\",\"/api/power?value=toggle\",\"/api/temp?delta=1\",\"/api/mode?value=heat\",\"/api/fan?value=5\",\"/api/swing?value=toggle\",\"/api/light?value=toggle\",\"/api/preset?wdCoolTemp=25&wdCoolTime=07:50&weCoolTarget=27\",\"/api/preset/run?kind=weekday\",\"/api/preset/run?kind=weekend\",\"/api/preset/cancel\",\"/api/send\",\"/api/ir\",\"/api/ir/apply\",\"/api/config?protocol=KELVINATOR&model=1\",\"/api/config?brightness=30\",\"/api/config?ssid=YOUR_WIFI&password=YOUR_PASSWORD\",\"GET /api/config-file\",\"POST /api/config-file\",\"POST /api/restart\",\"/api/reload-config\"]}"));
 }
 
 void handleNotFound() {
@@ -2824,6 +3116,9 @@ void setupWeb() {
   server.on("/api/ir", HTTP_GET, handleIrStatus);
   server.on("/api/ir/apply", HTTP_GET, handleIrApply);
   server.on("/api/config", HTTP_GET, handleConfig);
+  server.on("/api/config-file", HTTP_GET, handleConfigFileGet);
+  server.on("/api/config-file", HTTP_POST, handleConfigFileSave);
+  server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/api/reload-config", HTTP_GET, handleReloadConfig);
   server.on("/api/help", HTTP_GET, handleHelp);
   server.onNotFound(handleNotFound);
@@ -2867,6 +3162,11 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  if (deviceRestartPending && static_cast<int32_t>(millis() - deviceRestartDueMs) >= 0) {
+    delay(50);
+    ESP.restart();
+    return;
+  }
   button1.tick();
   button2.tick();
   processEspNowCommand();
