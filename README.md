@@ -98,6 +98,14 @@ If no SSID is configured, the device starts an AP named `IRStation` with passwor
 When the device is in AP mode, the web UI shows a Wi-Fi setup panel. Saving
 SSID/password updates `/config.json`; reboot the device to join the new network.
 
+mDNS is enabled for the web interface and advertises an `_http._tcp` service on
+port 80. The hostname is derived from the configured device `id`, converted to
+a lowercase DNS-safe label. For example, `IRStation-01` is available at
+`http://irstation-01.local/`. The active hostname and mDNS status are returned by
+`/api/state` and shown in the web UI footer. Changing `id` through the config
+editor reloads the mDNS responder immediately. Name resolution still depends on
+mDNS/Bonjour support on the client device and local network.
+
 The web UI is split into **Daily** and **Advanced** views. Daily contains the
 normal A/C controls and sleep presets. Advanced contains the A/C protocol and
 remote profile, LCD backlight, IR receiver/learning, Wi-Fi setup, a collapsible

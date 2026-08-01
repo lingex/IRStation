@@ -10,6 +10,7 @@
 #include <U8g2lib.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <time.h>
@@ -261,6 +262,7 @@ String lastEspNowError;
 String espNowDebugMessages[ESPNOW_DEBUG_MSG_COUNT];
 String lcdNoticeText;
 String configError;
+String mdnsHostname;
 uint32_t lastIrSendMs = 0;
 uint32_t lastEspNowRxMs = 0;
 uint32_t lastEspNowIgnoredMs = 0;
@@ -280,6 +282,7 @@ bool hasLastValidIrRx = false;
 bool displayDirty = true;
 bool presetScheduleActive = false;
 bool espNowReady = false;
+bool mdnsReady = false;
 uint8_t settingsIndex = 0;
 uint8_t backlightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
 uint8_t editBacklightBrightness = DEFAULT_LCD_BACKLIGHT_BRIGHTNESS;
@@ -382,7 +385,7 @@ textarea{width:100%;min-height:360px;resize:vertical;border:1px solid var(--line
     </div>
   </section>
 
-  <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="channel">CH --</span><span id="rssi">RSSI --</span></div>
+  <div class="foot"><span id="proto">Protocol --</span><span id="ip">IP --</span><span id="mdns">mDNS --</span><span id="channel">CH --</span><span id="rssi">RSSI --</span></div>
 </main>
 <script>
 const labels={mode:{auto:'Auto',cool:'Cool',heat:'Heat',dry:'Dry',fan:'Fan'},fan:{auto:'Auto','1':'1','2':'2','3':'3','4':'4','5':'5'},swing:{true:'On',false:'Off'}};
@@ -519,6 +522,7 @@ function render(s){
  document.getElementById('mode').textContent=labels.mode[state.mode]||state.mode; document.getElementById('fan').textContent=labels.fan[state.fan]||state.fan;
  document.getElementById('swing').textContent=state.swing?'On':'Off'; document.getElementById('power').classList.toggle('off',!state.power);
  document.getElementById('net').textContent=s.device.wifi+' / '+s.device.ip; document.getElementById('ip').textContent='IP '+s.device.ip;
+ const mdns=s.device.mdns||{}; document.getElementById('mdns').textContent=mdns.ready?('mDNS '+mdns.hostname+'.local'):'mDNS unavailable';
  document.getElementById('rssi').textContent='RSSI '+s.device.rssi; document.getElementById('channel').textContent='CH '+((s.espnow&&s.espnow.channel)||'--'); document.getElementById('proto').textContent='Protocol '+s.ir.protocol+'/'+s.ir.model;
  const protocolSelect=document.getElementById('protocolSelect'); if(protocolSelect.options.length) protocolSelect.value=s.ir.protocol;
  renderModelSelect(s.ir.protocol,s.ir.model);
@@ -1705,6 +1709,47 @@ String ipString() {
   return apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
 }
 
+String mdnsHostnameFromDeviceId(const String &value) {
+  String hostname;
+  hostname.reserve(63);
+  for (size_t i = 0; i < value.length() && hostname.length() < 63; i++) {
+    char c = value[i];
+    if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+    const bool alphaNumeric = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    if (alphaNumeric) {
+      hostname += c;
+    } else if (hostname.length() && hostname[hostname.length() - 1] != '-') {
+      hostname += '-';
+    }
+  }
+  while (hostname.endsWith("-")) hostname.remove(hostname.length() - 1);
+
+  if (!hostname.length()) {
+    char fallback[24];
+    snprintf(fallback, sizeof(fallback), "irstation-%06lx",
+             static_cast<unsigned long>(ESP.getEfuseMac() & 0xFFFFFF));
+    hostname = fallback;
+  }
+  return hostname;
+}
+
+bool startMdns() {
+  if (mdnsReady) {
+    MDNS.end();
+    mdnsReady = false;
+  }
+
+  mdnsHostname = mdnsHostnameFromDeviceId(deviceId);
+  if (!MDNS.begin(mdnsHostname.c_str())) return false;
+
+  MDNS.setInstanceName(deviceId.c_str());
+  MDNS.addService("http", "tcp", 80);
+  MDNS.addServiceTxt("http", "tcp", "id", deviceId.c_str());
+  MDNS.addServiceTxt("http", "tcp", "path", "/");
+  mdnsReady = true;
+  return true;
+}
+
 void appendEspNowDebugMessagesJson(String &json) {
   json += ",\"debugMsg\":[";
   for (uint8_t i = 0; i < espNowDebugCount; i++) {
@@ -1811,6 +1856,13 @@ String stateJson() {
   json += backlightBrightness;
   json += ",\"settingsMode\":";
   json += settingsMode ? "true" : "false";
+  json += ",\"mdns\":{\"ready\":";
+  json += mdnsReady ? "true" : "false";
+  json += ",\"hostname\":\"";
+  json += jsonEscape(mdnsHostname);
+  json += "\",\"url\":\"http://";
+  json += jsonEscape(mdnsHostname);
+  json += ".local/\"}";
   json += "}";
   json += ",\"espnow\":{\"ready\":";
   json += espNowReady ? "true" : "false";
@@ -2491,6 +2543,7 @@ void handleReloadConfig() {
   configSavePending = false;
   loadConfigFile();
   if (wifiSsid != oldSsid || wifiPassword != oldPassword) wifiRestartRequired = true;
+  if (!configError.length()) startMdns();
   showLcdNotice(configError.length() ? "CONFIG ERROR" : "CONFIG LOADED",
                 configError.length() ? LcdNoticeKind::Error : LcdNoticeKind::Success);
   sendApi(stateJson());
@@ -2584,6 +2637,7 @@ void handleConfigFileSave() {
 
   finishStagedConfig(true, hadPreviousConfig);
   if (wifiSsid != oldSsid || wifiPassword != oldPassword) wifiRestartRequired = true;
+  startMdns();
   displayDirty = true;
   showLcdNotice(wifiRestartRequired ? "SAVE / REBOOT" : "CONFIG LOADED",
                 wifiRestartRequired ? LcdNoticeKind::Warning : LcdNoticeKind::Success);
@@ -3078,7 +3132,9 @@ void pollIrReceiver() {
 }
 
 void setupWiFi() {
+  mdnsHostname = mdnsHostnameFromDeviceId(deviceId);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(mdnsHostname.c_str());
   if (wifiSsid.length()) {
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
     const uint32_t start = millis();
@@ -3095,6 +3151,7 @@ void setupWiFi() {
 
   apMode = true;
   WiFi.mode(WIFI_AP);
+  WiFi.softAPsetHostname(mdnsHostname.c_str());
   WiFi.softAP(IRSTATION_AP_SSID, IRSTATION_AP_PASSWORD, ESPNOW_CHANNEL);
 }
 
@@ -3157,6 +3214,7 @@ void setup() {
   setupWiFi();
   setupEspNow();
   setupWeb();
+  startMdns();
   drawDisplay();
 }
 
