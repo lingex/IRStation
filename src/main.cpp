@@ -1517,6 +1517,8 @@ struct EspNowCommandRoute {
   EspNowCommandHandler handler;
 };
 
+bool runPresetAction(SleepPresetKind kind);
+
 void executeEspNowPowerCommand(const String &uid, const String &sender) {
   lastEspNowUid = uid;
   lastEspNowCmd = "power";
@@ -1543,8 +1545,38 @@ void executeEspNowPowerCommand(const String &uid, const String &sender) {
   showLcdNotice("ESPNOW POWER", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
 }
 
+void executeEspNowPresetCommand(SleepPresetKind kind, const char *cmd, const String &uid, const String &sender) {
+  lastEspNowUid = uid;
+  lastEspNowCmd = cmd;
+  lastEspNowSender = sender;
+  lastEspNowRxMs = millis();
+  lastEspNowError = "";
+  noteActivity();
+
+  if (settingsMode) {
+    lastEspNowError = "LCD settings mode active";
+    showLcdNotice("ESPNOW BUSY", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  lastIrError = "";
+  if (!runPresetAction(kind)) {
+    lastEspNowError = lastIrError.length() ? lastIrError : "Preset start failed";
+  }
+}
+
+void executeEspNowWeekdayCommand(const String &uid, const String &sender) {
+  executeEspNowPresetCommand(SleepPresetKind::Weekday, "weekday", uid, sender);
+}
+
+void executeEspNowWeekendCommand(const String &uid, const String &sender) {
+  executeEspNowPresetCommand(SleepPresetKind::Weekend, "weekend", uid, sender);
+}
+
 constexpr EspNowCommandRoute ESPNOW_COMMAND_ROUTES[] = {
     {"power", executeEspNowPowerCommand},
+    {"weekday", executeEspNowWeekdayCommand},
+    {"weekend", executeEspNowWeekendCommand},
 };
 constexpr uint8_t ESPNOW_COMMAND_ROUTE_COUNT = sizeof(ESPNOW_COMMAND_ROUTES) / sizeof(ESPNOW_COMMAND_ROUTES[0]);
 

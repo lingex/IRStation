@@ -116,7 +116,7 @@ device restart button. The selected view is stored in the browser, so refreshing
 the page returns to the same view; a browser with no saved selection starts on
 Daily.
 
-`id` is this receiver's ESP-NOW identity. ESP-NOW commands are JSON messages addressed with `to`, for example `{"to":"irstation-01","uid":"unique-id","cmd":"power","chk":"CRC32"}`. Use `"to":"all"` to broadcast to every receiver. `chk` is required and is the uppercase CRC32 of canonical JSON with top-level `chk` omitted. Repeated messages with the same `uid` are ignored after the first handled command.
+`id` is this receiver's ESP-NOW identity. ESP-NOW commands are JSON messages addressed with `to`, for example `{"to":"irstation-01","uid":"unique-id","cmd":"power","chk":"CRC32"}`. Use `"to":"all"` to broadcast to every receiver. Supported `cmd` values are `power`, `weekday`, and `weekend`; the latter two start the matching sleep preset. `chk` is required and is the uppercase CRC32 of canonical JSON with top-level `chk` omitted. Repeated messages with the same `uid` are ignored after the first handled command.
 
 ## HTTP APIs
 
