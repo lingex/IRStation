@@ -1517,6 +1517,13 @@ struct EspNowCommandRoute {
   EspNowCommandHandler handler;
 };
 
+enum class EspNowControlCommand : uint8_t {
+  TempUp,
+  TempDown,
+  Swing,
+  Light,
+};
+
 bool runPresetAction(SleepPresetKind kind);
 
 void executeEspNowPowerCommand(const String &uid, const String &sender) {
@@ -1543,6 +1550,71 @@ void executeEspNowPowerCommand(const String &uid, const String &sender) {
     return;
   }
   showLcdNotice("ESPNOW POWER", LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+}
+
+void executeEspNowControlCommand(EspNowControlCommand command, const char *cmd, const String &uid, const String &sender) {
+  lastEspNowUid = uid;
+  lastEspNowCmd = cmd;
+  lastEspNowSender = sender;
+  lastEspNowRxMs = millis();
+  lastEspNowError = "";
+  noteActivity();
+
+  if (settingsMode) {
+    lastEspNowError = "LCD settings mode active";
+    showLcdNotice("ESPNOW BUSY", LcdNoticeKind::Warning, LCD_NOTICE_SHORT_MS);
+    return;
+  }
+
+  const AcCapabilities capabilities = currentCapabilities();
+  const char *notice = "ESPNOW CONTROL";
+  switch (command) {
+    case EspNowControlCommand::TempUp:
+      air.temp = constrain(static_cast<int>(air.temp) + 1, capabilities.tempMin, capabilities.tempMax);
+      notice = "ESPNOW TEMP +1";
+      break;
+    case EspNowControlCommand::TempDown:
+      air.temp = constrain(static_cast<int>(air.temp) - 1, capabilities.tempMin, capabilities.tempMax);
+      notice = "ESPNOW TEMP -1";
+      break;
+    case EspNowControlCommand::Swing:
+      air.swing = !air.swing;
+      notice = "ESPNOW SWING";
+      break;
+    case EspNowControlCommand::Light:
+      if (!capabilities.supportsLight) {
+        lastEspNowError = "Display light unsupported by current protocol";
+        showLcdNotice("LIGHT UNSUPPORT", LcdNoticeKind::Error, LCD_NOTICE_SHORT_MS);
+        return;
+      }
+      air.displayLight = !air.displayLight;
+      notice = "ESPNOW LIGHT";
+      break;
+  }
+
+  normalizeConfig();
+  saveState();
+  if (!sendCurrentAc()) {
+    lastEspNowError = lastIrError.length() ? lastIrError : "IR send failed";
+    return;
+  }
+  showLcdNotice(notice, LcdNoticeKind::Success, LCD_NOTICE_SHORT_MS);
+}
+
+void executeEspNowTempUpCommand(const String &uid, const String &sender) {
+  executeEspNowControlCommand(EspNowControlCommand::TempUp, "t_up", uid, sender);
+}
+
+void executeEspNowTempDownCommand(const String &uid, const String &sender) {
+  executeEspNowControlCommand(EspNowControlCommand::TempDown, "t_down", uid, sender);
+}
+
+void executeEspNowSwingCommand(const String &uid, const String &sender) {
+  executeEspNowControlCommand(EspNowControlCommand::Swing, "swing", uid, sender);
+}
+
+void executeEspNowLightCommand(const String &uid, const String &sender) {
+  executeEspNowControlCommand(EspNowControlCommand::Light, "light", uid, sender);
 }
 
 void executeEspNowPresetCommand(SleepPresetKind kind, const char *cmd, const String &uid, const String &sender) {
@@ -1575,6 +1647,10 @@ void executeEspNowWeekendCommand(const String &uid, const String &sender) {
 
 constexpr EspNowCommandRoute ESPNOW_COMMAND_ROUTES[] = {
     {"power", executeEspNowPowerCommand},
+    {"t_up", executeEspNowTempUpCommand},
+    {"t_down", executeEspNowTempDownCommand},
+    {"swing", executeEspNowSwingCommand},
+    {"light", executeEspNowLightCommand},
     {"weekday", executeEspNowWeekdayCommand},
     {"weekend", executeEspNowWeekendCommand},
 };
